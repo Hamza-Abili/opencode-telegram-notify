@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/Hamza-Abili/opencode-telegram-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/Hamza-Abili/opencode-telegram-notify/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/%40hamzaabili/opencode-telegram-notify)](https://www.npmjs.com/package/@hamzaabili/opencode-telegram-notify)
+[![npm downloads](https://img.shields.io/npm/dt/%40hamzaabili/opencode-telegram-notify)](https://www.npmjs.com/package/@hamzaabili/opencode-telegram-notify)
+[![GitHub stars](https://img.shields.io/github/stars/Hamza-Abili/opencode-telegram-notify?style=social)](https://github.com/Hamza-Abili/opencode-telegram-notify/stargazers)
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/Hamza-Abili/opencode-telegram-notify/blob/main/LICENSE)
 
 Telegram notifications for [OpenCode][] — **v1 and v2** — with **tap-only
@@ -261,6 +263,15 @@ bun run ci      # typecheck + tests
 bun run typecheck
 bun test
 ```
+
+### Monitoring
+
+- **Downloads**: always-visible badge on top (npm total); live numbers at
+  `https://api.npmjs.org/downloads/point/last-week/@hamzaabili/opencode-telegram-notify`
+  and the package page on npmjs.com (as owner, *Settings → Traffic* and the
+  downloads graph show weekly trends).
+- **GitHub**: the repo Insights → Traffic tab shows clones and stargazers;
+  stars badge is in the header.
 
 ## License
 
