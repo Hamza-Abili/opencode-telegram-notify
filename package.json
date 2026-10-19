@@ -1,6 +1,6 @@
 {
   "name": "@hamzaabili/opencode-telegram-notify",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenCode plugin (v1 and v2): Telegram notifications for permissions, questions, idle and errors, with tap-only inline buttons (never auto-approve).",
   "type": "module",
   "license": "MIT",
