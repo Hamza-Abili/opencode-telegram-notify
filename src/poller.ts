@@ -71,7 +71,7 @@ function setupSnippet(ctx: AppContext): string {
     "{",
     '  "plugins": [',
     "    {",
-    '      "package": "opencode-telegram-notify",',
+    '      "package": "@hamzaabili/opencode-telegram-notify",',
     '      "options": {',
     '        "telegram": {',
     '          "botToken": "${TELEGRAM_BOT_TOKEN}",',
@@ -248,6 +248,9 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
       }
       if (running && !heartbeat) {
         heartbeat = setInterval(lock.heartbeat, 10_000);
+        // v1 hosts have no plugin dispose chain: never keep a server process
+        // alive just because of a poller heartbeat.
+        (heartbeat as unknown as { unref?: () => void }).unref?.();
       }
       if (!commandsRegistered) {
         try {

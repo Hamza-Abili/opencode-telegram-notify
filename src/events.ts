@@ -234,6 +234,9 @@ export function createRouter(ctx: AppContext): {
         .sendMessage(fmt.formatCompleted(sessionID, title, fctx))
         .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));
     }, cfg.idleDebounceMs);
+    // Never keep a server process alive only because a completion notification
+    // is pending (matters for plugin hosts without a dispose chain, i.e. v1).
+    (t as unknown as { unref?: () => void }).unref?.();
     state.idleTimers.set(sessionID, t);
   }
 

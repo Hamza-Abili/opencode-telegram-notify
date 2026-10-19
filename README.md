@@ -1,7 +1,11 @@
 # opencode-telegram-notify
 
-Telegram notifications for [OpenCode][] v2 — with **tap-only inline buttons** for
-permission requests. Never auto-approves anything.
+[![CI](https://github.com/Hamza-Abili/opencode-telegram-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/Hamza-Abili/opencode-telegram-notify/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40hamzaabili/opencode-telegram-notify)](https://www.npmjs.com/package/@hamzaabili/opencode-telegram-notify)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/Hamza-Abili/opencode-telegram-notify/blob/main/LICENSE)
+
+Telegram notifications for [OpenCode][] — **v1 and v2** — with **tap-only
+inline buttons** for permission requests. Never auto-approves anything.
 
 > 🔐 "OpenCode needs you" — permission requests, questions, completions and
 > failures land in your Telegram chat while OpenCode keeps running on your
@@ -33,9 +37,9 @@ This plugin is different in four ways:
 
 | | opencode-telegram-notify | typical alternatives |
 | --- | --- | --- |
-| OpenCode contract | **v2-native** `{id, setup}` | v1 `@opencode/plugin` SDK |
+| OpenCode versions | **v1 + v2** (two entries, one shared core) | v1 SDK only |
 | Runtime dependencies | **zero** (plain `fetch`) | bot frameworks / channels stacks |
-| Permissions | tap-only inline buttons → `client.permission.reply` | missing or reply-as-prompt (hallucination risk) |
+| Permissions | tap-only inline buttons → supported reply surface | missing or reply-as-prompt (hallucination risk) |
 | Safety model | one bot = one chat, single-poller lock, ownership gate, event dedupe | assumptions |
 
 Scope is deliberate: **notifications + tap-only permission buttons**. It is not
@@ -43,6 +47,9 @@ a chat-with-your-agent relay, it never injects text into your sessions.
 
 ## Features
 
+- 🔌 **Works with OpenCode v1 and v2** — the v2 default export (`{id, setup}`)
+  and a v1 `legacy` entry share the same core; only events transport and
+  permission reply surface differ per version.
 - 🔐 **Permission requests** as messages with three buttons: *Allow once*,
   *Always allow*, *Reject* — mapped to `client.permission.reply`
   (`once` / `always` / `reject`). Tap-only: no free text, no prompt injection,
@@ -59,7 +66,7 @@ a chat-with-your-agent relay, it never injects text into your sessions.
   `/setup` prints a copy-paste-ready `opencode.jsonc` block.
 - 🏠 **Multi-instance safe** — several OpenCode instances on one host: each
   notifies only for its own project root; a single-poller file lock guarantees
-  only one process consumes `getUpdates`; process-level `evt_` dedupe means
+  only one process consumes `getUpdates`; process-level event-id dedupe means
   reloads don't double-send.
 - 🌐 **en / it** notification language.
 - 🔒 **Private by default** — `hideCommands: true` replaces shell/tool args with
@@ -67,7 +74,9 @@ a chat-with-your-agent relay, it never injects text into your sessions.
 
 ## Requirements
 
-- OpenCode **v2** (tested on 2.0.32).
+- OpenCode **v2** (tested on 2.0.32) or **v1** (the hooks-based
+  `@opencode-ai/plugin` contract, e.g. the 1.x line). v1 has no per-plugin
+  options, so its configuration is environment-driven only.
 - A Telegram bot token (via [@BotFather] — takes one minute) and the chat id of
   your user or group.
 - [Bun] **only if you run the dev tooling** (typecheck/tests). The plugin itself
@@ -82,16 +91,14 @@ a chat-with-your-agent relay, it never injects text into your sessions.
 
 1. In Telegram, chat with `@BotFather`, send `/newbot`, follow prompts, copy the
    token (looks like `123456789:AA…`).
-2. Send `/start` to your bot once, then find your numeric chat id — send
-   `/status` inside the bot chat the first time (button-less setup) or simply
-   start OpenCode with `TELEGRAM_CHAT_ID` unset; the plugin logs a queued
-   update error mentioning your id. Fastest: message `@userinfobot`.
+2. Send `/start` to your bot once, then find your numeric chat id — the
+   `/start` reply echoes your chat id in a copy block, or message
+   `@userinfobot`.
 
 ### 2. Point OpenCode at the plugin
 
-Clone (or download) this repo anywhere you keep tools, then add it to
-`~/.config/opencode/opencode.jsonc` — the plugin directory is passed as the
-config entry **path** (no build step, no npm):
+**OpenCode v2** — add it to `~/.config/opencode/opencode.jsonc`. Use a source
+checkout path (works on every v2 build) or the npm name where supported:
 
 ```jsonc
 {
@@ -110,6 +117,27 @@ config entry **path** (no build step, no npm):
 }
 ```
 
+(the npm form `"package": "@hamzaabili/opencode-telegram-notify"` exists on
+the registry for builds that install or resolve plugin packages by name.)
+
+**OpenCode v1** — register the `legacy` entry as a plugin name in
+`opencode.json`:
+
+```json
+{
+  "plugin": [
+    "@hamzaabili/opencode-telegram-notify/legacy"
+  ]
+}
+```
+
+If your v1 build does not resolve npm package specifiers, clone this repo and
+point the entry at the local file:
+
+```json
+{ "plugin": ["/absolute/path/to/opencode-telegram-notify/src/legacy.ts"] }
+```
+
 ### 3. Provide the environment
 
 The plugin expands `${VAR}` in option values and falls back to the flat env
@@ -118,10 +146,11 @@ names, so secrets never sit in `opencode.jsonc`:
 ```sh
 export TELEGRAM_BOT_TOKEN="123456789:AA…"
 export TELEGRAM_CHAT_ID="123456789"        # negative number for group chats
+export TELEGRAM_LANGUAGE="en"              # optional (mainly for OpenCode v1)
 ```
 
-(For a `systemd` unit or `docker compose` install, pass these two variables
-into the OpenCode process environment.)
+(For a `systemd` unit or `docker compose` install, pass these environment
+variables into the OpenCode process environment.)
 
 ### 4. Restart OpenCode
 
@@ -166,8 +195,20 @@ ignored — this is a notifier, not a chat relay.
 
 ## How it fits OpenCode
 
-- Plug-in entry is the v2 contract: `export default { id, setup }` — `setup`
-  subscribes to the event stream, starts the poller, and returns a dispose.
+- v2 plugin entry is the `{id, setup}` contract — `setup` subscribes to the
+  event stream, starts the poller, and returns a dispose.
+- v1 entry (`./legacy`) is a hooks factory: bus events arrive through the
+  `event` hook and permission answers go over the v1 SDK surface
+  `POST /session/{id}/permissions/{permissionID}` with body `{ response }`
+  (or the modern `permission.reply` client namespace when present). Both v1
+  permission generations are accepted on the event side:
+  `permission.updated {id, title, metadata}` (pre-rework hosts) and
+  `permission.asked {id, permission, patterns, metadata, always, tool?}`
+  (post-rework v1.x). On v1, `MessageAbortedError` maps to the *silent*
+  interruption notification (a user abort is not a failure); v1 has no
+  `form.*` flow, so questions are simply not available there. Note: the bot's
+  `/setup` reply always prints the v2 `plugins[]` config shape; on v1 copy the
+  `plugin: [...]` entry from this README instead.
 - Events used: `permission.asked/replied`, `form.created/replied/cancelled`,
   `session.execution.succeeded/failed/interrupted`, plus `session.created`,
   `session.renamed` and activity events for the debounce/ownership logic.
@@ -206,10 +247,11 @@ One host can run several OpenCode instances (different roots, same bot token):
 
 ## Roadmap
 
-- v0.2: in-chat question answering via the `form.reply` surface (wizard),
-  reply-to-message → notes, `/menu`-style settings keyboard.
-- npm publication for `package: "opencode-telegram-notify"` installs (the
-  manifest already carries the metadata).
+- v0.3: in-chat question answering via the `form.reply` surface (wizard),
+  reply-to-message → notes, menu-style settings keyboard.
+- npm by-name installs keep improving alongside OpenCode's resolver changes:
+  currently `"package": "@hamzaabili/opencode-telegram-notify"` (installed) or
+  an absolute repo path.
 
 ## Development
 

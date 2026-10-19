@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0 — dual v1/v2 support and npm distribution
+
+- One package, two entry points sharing the same core:
+  - `.` — OpenCode v2 default export `{id, setup}` (unchanged);
+  - `./legacy` — OpenCode v1 hooks factory, usable as
+    `@hamzaabili/opencode-telegram-notify/legacy` in the v1 `"plugin"` config.
+- v1 event mapping: `permission.updated` (pre-rework:
+  `{id, sessionID, title, metadata}`) and `permission.asked` (post-rework
+  v1.x: `{id, sessionID, permission, patterns, metadata, always, tool?}`)
+  both map to the shared asked-envelope; `permission.replied` accepts both
+  `{permissionID, response}` and `{requestID, reply}` field generations;
+  `session.created/updated/deleted` with a title ledger that only forwards
+  real changes; `session.status` → activity; `session.idle` → completion;
+  `session.error` → failure, with `MessageAbortedError` mapped to the
+  *silent* interruption notice.
+- Permissions on v1 are answered through the legacy surface
+  `POST /session/{id}/permissions/{permissionID}` body `{ response }`, with
+  an automatic fallback to the modern `permission.reply({requestID, reply})`
+  client namespace when the host exposes it (the fallback is logged).
+- `TELEGRAM_LANGUAGE` environment fallback (v1 has no per-plugin options);
+  explicit options keep precedence.
+- Poller heartbeat and idle timers are unref'ed so the plugin can never keep
+  a server process alive on v1 hosts, which expose no dispose chain.
+- npm distribution as the scoped package `@hamzaabili/opencode-telegram-notify`
+  (the unscoped name is occupied by an unrelated project) and free CI/CD:
+  `release.yml` (tag → typecheck/tests → GitHub Release → optional
+  `NPM_TOKEN`-based npm publish) plus Dependabot.
+- v1 host test hooks: mapper (both permission generations), client shim
+  (legacy + modern surfaces incl. fallback), bounded queue, and disabled-path
+  factory tested — 72 tests across 7 files.
+
 ## 0.1.0 — first public release
 
 - v2-native plugin contract: `export default { id, setup }`, zero runtime

@@ -1,7 +1,7 @@
 {
-  "name": "opencode-telegram-notify",
-  "version": "0.1.0",
-  "description": "OpenCode (v2) plugin: Telegram notifications for permissions, questions, idle and errors, with tap-only inline buttons (never auto-approve).",
+  "name": "@hamzaabili/opencode-telegram-notify",
+  "version": "0.2.0",
+  "description": "OpenCode plugin (v1 and v2): Telegram notifications for permissions, questions, idle and errors, with tap-only inline buttons (never auto-approve).",
   "type": "module",
   "license": "MIT",
   "author": "Hamza-Abili",
@@ -10,7 +10,9 @@
     "opencode-plugin",
     "telegram",
     "notifications",
-    "permissions"
+    "permissions",
+    "inline-buttons",
+    "bot"
   ],
   "repository": {
     "type": "git",
@@ -23,11 +25,14 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./index.ts",
+    "./legacy": "./src/legacy.ts",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
+    "index.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

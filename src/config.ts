@@ -78,6 +78,10 @@ function asStringList(value: unknown): string[] {
 /**
  * Validate and normalize raw plugin options into an AppConfig.
  * Throws ConfigError with a precise message when required values are missing.
+ *
+ * OpenCode v1 has no per-plugin options, so the flat environment variables
+ * `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `TELEGRAM_LANGUAGE` act as
+ * fallbacks for the corresponding values.
  */
 export function loadConfig(raw: unknown, env: Record<string, string | undefined> = process.env): AppConfig {
   const root = (raw ?? {}) as Record<string, unknown>;
@@ -103,7 +107,8 @@ export function loadConfig(raw: unknown, env: Record<string, string | undefined>
     );
   }
 
-  const language = root.language === "it" ? "it" : "en";
+  const language =
+    root.language === "it" || (!root.language && env.TELEGRAM_LANGUAGE?.trim() === "it") ? "it" : "en";
 
   return {
     telegram: {
