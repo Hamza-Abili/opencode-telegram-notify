@@ -239,6 +239,7 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
   let running = true;
   let commandsRegistered = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let offset = 0;
 
   const loopDone = (async () => {
     while (running) {
@@ -267,10 +268,11 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         }
       }
       try {
-        const updates = await ctx.telegram.getUpdates(0, longPoll);
+        const updates = await ctx.telegram.getUpdates(offset, longPoll);
         for (const update of updates) {
           if (!running) break;
           await dispatch(ctx, update);
+          offset = update.update_id + 1;
         }
       } catch (error) {
         if (error instanceof TelegramError && error.code === 409) {
