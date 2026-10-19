@@ -49,4 +49,9 @@ jobs:
             echo "::warning::NPM_TOKEN secret is not set - skipping npm publish (add it in Repo Settings -> Secrets and variables -> Actions to enable npm distribution)"
             exit 0
           fi
+          version=$(npm pkg get version | tr -d '"')
+          if npm view "@hamzaabili/opencode-telegram-notify@$version" version >/dev/null 2>&1; then
+            echo "::notice::$version is already published - skipping npm publish"
+            exit 0
+          fi
           npm publish --access public
