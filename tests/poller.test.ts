@@ -156,7 +156,6 @@ describe("poller lifecycle", () => {
 
     // First call gets offset=0, all subsequent calls get offset=11 (10 + 1)
     expect(receivedOffsets[0]).toBe(0);
-    expect(receivedOffsets.slice(1)).toHaveLength(receivedOffsets.length - 1);
     for (let i = 1; i < receivedOffsets.length; i++) {
       expect(receivedOffsets[i]).toBe(11);
     }
