@@ -127,4 +127,74 @@ describe("poller lifecycle", () => {
     stop();
     expect(calls.commands[0]?.map((c) => c.command)).toContain("start");
   });
+
+  test("offset advances and updates are not reprocessed across polls", async () => {
+    const { ctx, calls } = mkContext();
+    const lockDir = await import("node:os").then((os) => os.tmpdir());
+
+    const receivedOffsets: number[] = [];
+    // Override getUpdates to capture offsets and return updates sequentially
+    ctx.telegram.getUpdates = async (offset: number) => {
+      receivedOffsets.push(offset);
+      // First call: return one /start command
+      if (receivedOffsets.length === 1) {
+        return [
+          {
+            update_id: 10,
+            message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } },
+          },
+        ];
+      }
+      // Subsequent calls: return empty (simulates no new updates)
+      return [];
+    };
+
+    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
+    // Wait for first poll cycle + long poll timeout + a few empty polls
+    await new Promise((r) => setTimeout(r, 1500));
+    stop();
+
+    // First call gets offset=0, all subsequent calls get offset=11 (10 + 1)
+    expect(receivedOffsets[0]).toBe(0);
+    expect(receivedOffsets.slice(1)).toHaveLength(receivedOffsets.length - 1);
+    for (let i = 1; i < receivedOffsets.length; i++) {
+      expect(receivedOffsets[i]).toBe(11);
+    }
+    // Only one "is online" message sent (no reprocessing)
+    const onlineMsgs = calls.sent.filter((m) => m.text?.includes("is online"));
+    expect(onlineMsgs).toHaveLength(1);
+  });
+
+  test("offset advances correctly with multiple updates in one batch", async () => {
+    const { ctx, calls } = mkContext();
+    const lockDir = await import("node:os").then((os) => os.tmpdir());
+
+    const receivedOffsets: number[] = [];
+    ctx.telegram.getUpdates = async (offset: number) => {
+      receivedOffsets.push(offset);
+      // First call: return multiple updates
+      if (receivedOffsets.length === 1) {
+        return [
+          { update_id: 20, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+          { update_id: 21, message: { message_id: 2, chat: { id: CHAT }, text: "/status", from: { id: 5 } } },
+          { update_id: 22, message: { message_id: 3, chat: { id: CHAT }, text: "/help", from: { id: 5 } } },
+        ];
+      }
+      // Subsequent calls: return empty
+      return [];
+    };
+
+    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
+    await new Promise((r) => setTimeout(r, 1500));
+    stop();
+
+    // First call gets offset=0, all subsequent calls get offset=23 (22 + 1)
+    expect(receivedOffsets[0]).toBe(0);
+    for (let i = 1; i < receivedOffsets.length; i++) {
+      expect(receivedOffsets[i]).toBe(23);
+    }
+    // Three commands processed, one "is online" from /start
+    const onlineMsgs = calls.sent.filter((m) => m.text?.includes("is online"));
+    expect(onlineMsgs).toHaveLength(1);
+  });
 });
