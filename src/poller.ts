@@ -8,10 +8,16 @@
  *
  * Only the bound chat is served; unknown chats are ignored. Messages that are
  * not commands are ignored silently (this is a notifier, not a general bot).
+ *
+ * Offset persistence: the last processed update_id is stored in poller.offset.json
+ * alongside the poller lock file. This survives process restarts and prevents
+ * reprocessing old updates. A process-level dedupe set (Symbol.for) provides
+ * additional protection against redelivery within the same process lifetime.
  */
 
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
 import {
   HELP,
   PROJECT,
@@ -43,6 +49,54 @@ export interface PollerOptions {
 const POLL_ACQUIRE_DELAY_MS = 15_000;
 const STANDSTILL_MS = 45_000;
 const FAILURE_DELAY_MS = 5_000;
+const OFFSET_FILE = "poller.offset.json";
+const SEEN_MAX = 2000;
+
+/** Process-level seen-update registry; survives plugin reloads in one process. */
+const SEEN_SYMBOL = Symbol.for("opencode-telegram-notify/seen-updates");
+function seenSet(): Set<number> {
+  const store = globalThis as unknown as Record<symbol, Set<number>>;
+  let set = store[SEEN_SYMBOL];
+  if (!set) {
+    set = new Set<number>();
+    store[SEEN_SYMBOL] = set;
+  }
+  return set;
+}
+const seenUpdates = seenSet();
+
+/** @internal clear the process-level dedupe set (test hook). */
+export function resetProcessUpdateDedupe(): void {
+  seenUpdates.clear();
+}
+
+function offsetFilePath(lockDir: string): string {
+  return path.join(lockDir, OFFSET_FILE);
+}
+
+function readOffset(lockDir: string): number {
+  try {
+    const raw = fs.readFileSync(offsetFilePath(lockDir), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0) {
+      return parsed.offset;
+    }
+  } catch {
+    // missing or malformed → start from 0
+  }
+  return 0;
+}
+
+function writeOffset(lockDir: string, offset: number): void {
+  try {
+    fs.mkdirSync(lockDir, { recursive: true });
+    const tmp = offsetFilePath(lockDir) + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ offset }));
+    fs.renameSync(tmp, offsetFilePath(lockDir));
+  } catch (error) {
+    // best effort; next successful write will catch up
+  }
+}
 
 function defaultLockDir(): string {
   const base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
@@ -239,7 +293,7 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
   let running = true;
   let commandsRegistered = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let offset = 0;
+  let offset = readOffset(lockDir);
 
   const loopDone = (async () => {
     while (running) {
@@ -271,8 +325,17 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         const updates = await ctx.telegram.getUpdates(offset, longPoll);
         for (const update of updates) {
           if (!running) break;
+          // Dedupe: skip updates already seen in this process lifetime
+          if (seenUpdates.has(update.update_id)) continue;
+          if (seenUpdates.size >= SEEN_MAX) {
+            const oldest = seenUpdates.values().next().value;
+            if (oldest !== undefined) seenUpdates.delete(oldest);
+          }
           await dispatch(ctx, update);
+          // Only advance offset after successful dispatch; persist immediately
           offset = update.update_id + 1;
+          seenUpdates.add(update.update_id);
+          writeOffset(lockDir, offset);
         }
       } catch (error) {
         if (error instanceof TelegramError && error.code === 409) {
@@ -281,6 +344,7 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
           await sleep(STANDSTILL_MS);
           continue;
         }
+        // Non-409 error: do not advance offset, retry with same offset next cycle
         ctx.logError(`getUpdates failed: ${String(error)}`);
         await sleep(FAILURE_DELAY_MS);
       }

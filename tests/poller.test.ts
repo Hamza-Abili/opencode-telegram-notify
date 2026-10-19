@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { dispatch, startPoller } from "../src/poller.ts";
+import { describe, expect, test, beforeEach } from "bun:test";
+import { dispatch, startPoller, resetProcessUpdateDedupe } from "../src/poller.ts";
 import { mkContext, permissionAsked } from "./helpers.ts";
+import { rmSync } from "node:fs";
 
 const CHAT = 5;
 
@@ -117,6 +118,10 @@ describe("dispatch — permission callbacks", () => {
 });
 
 describe("poller lifecycle", () => {
+  beforeEach(() => {
+    resetProcessUpdateDedupe();
+  });
+
   test("registers bot commands and releases the lock on dispose", async () => {
     const { ctx, calls } = mkContext();
     const lockDir = await import("node:os").then((os) => os.tmpdir());
@@ -131,6 +136,8 @@ describe("poller lifecycle", () => {
   test("offset advances and updates are not reprocessed across polls", async () => {
     const { ctx, calls } = mkContext();
     const lockDir = await import("node:os").then((os) => os.tmpdir());
+    // Clean up any existing offset file
+    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
 
     const receivedOffsets: number[] = [];
     // Override getUpdates to capture offsets and return updates sequentially
@@ -167,6 +174,8 @@ describe("poller lifecycle", () => {
   test("offset advances correctly with multiple updates in one batch", async () => {
     const { ctx, calls } = mkContext();
     const lockDir = await import("node:os").then((os) => os.tmpdir());
+    // Clean up any existing offset file
+    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
 
     const receivedOffsets: number[] = [];
     ctx.telegram.getUpdates = async (offset: number) => {
@@ -193,6 +202,80 @@ describe("poller lifecycle", () => {
       expect(receivedOffsets[i]).toBe(23);
     }
     // Three commands processed, one "is online" from /start
+    const onlineMsgs = calls.sent.filter((m) => m.text?.includes("is online"));
+    expect(onlineMsgs).toHaveLength(1);
+  });
+
+  test("offset persists across poller restarts", async () => {
+    const { ctx, calls } = mkContext();
+    const lockDir = await import("node:os").then((os) => os.tmpdir());
+    // Clean up any existing offset file
+    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
+
+    const receivedOffsets: number[] = [];
+    let callCount = 0;
+    ctx.telegram.getUpdates = async (offset: number) => {
+      receivedOffsets.push(offset);
+      callCount++;
+      if (callCount === 1) {
+        return [
+          { update_id: 30, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+        ];
+      }
+      if (callCount === 2) {
+        // Second poller instance should start from persisted offset (31)
+        return [];
+      }
+      return [];
+    };
+
+    // First poller run
+    const stop1 = startPoller(ctx, { lockDir, longPollSeconds: 1 });
+    await new Promise((r) => setTimeout(r, 500));
+    stop1();
+
+    // Second poller run (simulating restart)
+    const stop2 = startPoller(ctx, { lockDir, longPollSeconds: 1 });
+    await new Promise((r) => setTimeout(r, 500));
+    stop2();
+
+    // First call gets offset=0, second poller starts from offset=31
+    expect(receivedOffsets[0]).toBe(0);
+    expect(receivedOffsets[1]).toBe(31);
+    // Only one "is online" message sent total
+    const onlineMsgs = calls.sent.filter((m) => m.text?.includes("is online"));
+    expect(onlineMsgs).toHaveLength(1);
+  });
+
+  test("dedupe prevents reprocessing same update_id in same process", async () => {
+    const { ctx, calls } = mkContext();
+    const lockDir = await import("node:os").then((os) => os.tmpdir());
+    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
+
+    const receivedOffsets: number[] = [];
+    let callCount = 0;
+    ctx.telegram.getUpdates = async (offset: number) => {
+      receivedOffsets.push(offset);
+      callCount++;
+      if (callCount === 1) {
+        return [
+          { update_id: 40, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+        ];
+      }
+      if (callCount === 2) {
+        // Simulate Telegram redelivering the same update
+        return [
+          { update_id: 40, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+        ];
+      }
+      return [];
+    };
+
+    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
+    await new Promise((r) => setTimeout(r, 1000));
+    stop();
+
+    // Should only process the update once despite redelivery
     const onlineMsgs = calls.sent.filter((m) => m.text?.includes("is online"));
     expect(onlineMsgs).toHaveLength(1);
   });

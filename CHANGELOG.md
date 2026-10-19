@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 — poller offset persistence and redelivery fixes
+
+- Offset now persisted to `poller.offset.json` alongside the lock file; survives
+  process restarts and prevents reprocessing old updates on plugin reload.
+- Process-level dedupe set (`Symbol.for("opencode-telegram-notify/seen-updates")`)
+  ignores already-seen `update_id` values within the same process lifetime.
+- Offset is advanced **only after** successful `dispatch()` and persisted
+  immediately; on `getUpdates` failure (non-409) the offset is not advanced and
+  the same offset is retried next cycle.
+- New test coverage: offset persistence across restarts, in-process dedupe on
+  redelivery, and proper offset advancement ordering.
+
+## 0.2.1 — (internal) offset advancement fix
+
 ## 0.2.0 — dual v1/v2 support and npm distribution
 
 - One package, two entry points sharing the same core:
