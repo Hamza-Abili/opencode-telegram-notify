@@ -142,6 +142,20 @@ export function isSettledError(error: unknown): boolean {
   );
 }
 
+/** Log the full error details for debugging permission/form replies. */
+export function logReplyError(ctx: AppContext, label: string, error: unknown): void {
+  const err = error as
+    | { code?: unknown; status?: unknown; message?: unknown; cause?: unknown; response?: unknown }
+    | undefined;
+  const details = {
+    code: err?.code ?? err?.status,
+    message: err?.message,
+    cause: err?.cause ? String(err.cause).slice(0, 200) : undefined,
+    response: err?.response ? String(err.response).slice(0, 200) : undefined,
+  };
+  ctx.logError(`${label} failed: ${JSON.stringify(details)}`);
+}
+
 function questionSurface(ctx: AppContext, scoped?: boolean): LooseQuestion | undefined {
   if (scoped) return ctx.client.session?.question;
   return ctx.client.question;

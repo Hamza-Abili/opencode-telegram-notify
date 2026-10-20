@@ -19,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AppContext, FormChoice, PendingForm } from "./context.ts";
-import { isSettledError, replyPermission, replyQuestion } from "./context.ts";
+import { isSettledError, logReplyError, replyPermission, replyQuestion } from "./context.ts";
 import { escapeHtml } from "./format.ts";
 import {
   ANSWERED_IN_TERMINAL,
@@ -293,6 +293,7 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
       ctx.logError(`edit/ack after reply failed: ${String(editError)}`);
     }
   } catch (error) {
+    logReplyError(ctx, "permission reply", error);
     if (isSettledError(error)) {
       ctx.pending.delete(messageId);
       try {
@@ -312,7 +313,6 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
         // ignore
       }
     }
-    ctx.logError(`permission reply failed: ${String(error)}`);
   }
 }
 
@@ -355,6 +355,7 @@ async function answerForm(
     await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
     await ctx.telegram.answerCallbackQuery(callbackId, text);
   } catch (error) {
+    logReplyError(ctx, "question reply", error);
     if (isSettledError(error)) {
       ctx.pendingForms.delete(messageId);
       try {
@@ -372,7 +373,6 @@ async function answerForm(
         // ignore
       }
     }
-    ctx.logError(`question reply failed: ${String(error)}`);
   }
 }
 /** Route one Telegram update (commands and callbacks). Exported for tests. */
