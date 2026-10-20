@@ -50,7 +50,10 @@ jobs:
             exit 0
           fi
           version=$(npm pkg get version | tr -d '"')
-          if npm view "@hamzaabili/opencode-telegram-notify@$version" version >/dev/null 2>&1; then
+          name=$(npm pkg get name | tr -d '"')
+          # npm view cannot see versions still staging right after a publish;
+          # a re-push inside that window may attempt (and fail) the publish.
+          if npm view "$name@$version" version >/dev/null 2>&1; then
             echo "::notice::$version is already published - skipping npm publish"
             exit 0
           fi

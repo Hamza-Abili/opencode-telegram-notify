@@ -89,6 +89,21 @@ export const DONE_ALLOWED = {
   it: "✅ Consentito ({decision})",
 } as const;
 
+export const DONE_ANSWERED = {
+  en: "✅ Answered via Telegram",
+  it: "✅ Risposto da Telegram",
+} as const;
+
+export const DONE_SKIPPED = {
+  en: "⏹ Skipped via Telegram",
+  it: "⏹ Saltato da Telegram",
+} as const;
+
+export const QUESTION_SKIP = {
+  en: "⏹ Skip",
+  it: "⏹ Salta",
+} as const;
+
 export const DONE_REJECTED = {
   en: "🚫 Rejected",
   it: "🚫 Rifiutato",
@@ -105,8 +120,13 @@ export const EXPIRED_OR_STALE = {
 } as const;
 
 export const ANSWER_IN_TERMINAL = {
-  en: "⌨️ Answer in your terminal — tap-only bot cannot answer questions for you.",
-  it: "⌨️ Rispondi nel terminale — il bot non risponde alle domande per te.",
+  en: "⌨️ Answer in your terminal — this question type is not tap-answerable.",
+  it: "⌨️ Rispondi nel terminale — questo tipo di domanda non ha bottoni.",
+} as const;
+
+export const ANSWER_WITH_BUTTONS = {
+  en: "👆 Answer below — a single tap sends it to the agent. Nothing is ever auto-submitted.",
+  it: "👆 Rispondi qui sotto — un tap lo invia all'agente. Niente viene mai inviato da solo.",
 } as const;
 
 export const START = {

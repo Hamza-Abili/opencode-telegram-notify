@@ -7,6 +7,7 @@ import type { FormCreatedData, PermissionAskedData } from "./types.ts";
 import type { Language } from "./config.ts";
 import {
   ANSWER_IN_TERMINAL,
+  ANSWER_WITH_BUTTONS,
   CANCELLED,
   COMPLETED,
   EMPTY,
@@ -68,7 +69,11 @@ export function formatPermission(data: PermissionAskedData, ctx: FormatContext):
 }
 
 /** Question (form) message body: notify-only in this release. */
-export function formatQuestion(data: FormCreatedData, ctx: FormatContext): string {
+export function formatQuestion(
+  data: FormCreatedData,
+  ctx: FormatContext,
+  mode: "plain" | "buttons" = "plain"
+): string {
   const form = data.form;
   const head = header(QUESTION[ctx.language], ctx, form.sessionID);
   const body = [head, `<b>${escapeHtml(truncate(form.title ?? "", 120))}</b>`];
@@ -87,7 +92,7 @@ export function formatQuestion(data: FormCreatedData, ctx: FormatContext): strin
   }
   if (fields.length > 5) body.push(`<i>+${fields.length - 5}</i>`);
   body.push("");
-  body.push(ANSWER_IN_TERMINAL[ctx.language]);
+  body.push(mode === "buttons" ? ANSWER_WITH_BUTTONS[ctx.language] : ANSWER_IN_TERMINAL[ctx.language]);
   return truncate(body.join("\n"), ctx.maxBody);
 }
 

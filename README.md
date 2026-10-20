@@ -59,8 +59,10 @@ a chat-with-your-agent relay, it never injects text into your sessions.
 - ✍️ **Live feedback** — buttons are replaced with ✅/🚫 confirmations and a
   toast appears on tap; on next OpenCode restart older buttons answer politely
   with "outdated" instead of dying silently.
-- ❓ **Questions** (v2 `form.*`) as notify-only messages with the options
-  listed in chat — you answer in the terminal (v1 of a wizard is roadmap).
+- ❓ **Questions** (v2 `form.*`) answered in chat: single-select questions
+  arrive as tap buttons (answer or ⏹ skip → `question.reply` / `reject`),
+  other question types stay notify-only with the terminal pointer, and
+  pending questions survive restarts (`question.list` recovery).
 - ✅ / ❌ / ⏹ **Lifecycle events** — completion (debounced so mid-run pauses
   don't spam), failure with error type, cancellation (silent).
 - 🤖 **Bot command menu** — `/start`, `/status`, `/setup`, `/stop`, `/help`
@@ -119,8 +121,9 @@ checkout path (works on every v2 build) or the npm name where supported:
 }
 ```
 
-(the npm form `"package": "@hamzaabili/opencode-telegram-notify"` exists on
-the registry for builds that install or resolve plugin packages by name.)
+(the npm form `"package": "@hamzaabili/opencode-telegram-notify"` is verified:
+the v2 loader resolves the name from the registry and caches it under
+`~/.cache/opencode/npm/`; other builds may only accept absolute paths.)
 
 **OpenCode v1** — register the `legacy` entry as a plugin name in
 `opencode.json`:
@@ -247,13 +250,14 @@ One host can run several OpenCode instances (different roots, same bot token):
   `configuration error: …` line (stderr/`logFile`) and the plugin disables
   itself for that session.
 
-## Roadmap
+## Deferred ideas
 
-- v0.3: in-chat question answering via the `form.reply` surface (wizard),
-  reply-to-message → notes, menu-style settings keyboard.
-- npm by-name installs keep improving alongside OpenCode's resolver changes:
-  currently `"package": "@hamzaabili/opencode-telegram-notify"` (installed) or
-  an absolute repo path.
+Deliberately not scheduled; revisit when they earn their complexity:
+
+- menu-style settings keyboard (runtime config writes are outside the
+  current plugin surface);
+- reply-to-message → in-session notes (extra control channel);
+- multi-field question wizards (open, keep notify-only for now).
 
 ## Development
 
@@ -266,12 +270,12 @@ bun test
 
 ### Monitoring
 
-- **Downloads**: always-visible badge on top (npm total); live numbers at
-  `https://api.npmjs.org/downloads/point/last-week/@hamzaabili/opencode-telegram-notify`
-  and the package page on npmjs.com (as owner, *Settings → Traffic* and the
-  downloads graph show weekly trends).
-- **GitHub**: the repo Insights → Traffic tab shows clones and stargazers;
-  stars badge is in the header.
+- **Downloads**: always-visible badge on top (npm total); live numbers via
+  the [npm downloads API](https://api.npmjs.org/downloads/point/last-week/@hamzaabili/opencode-telegram-notify)
+  and the package page on npmjs.com. npm's downloads index starts reporting
+  a few days after the first publish; the badge fills in once indexed.
+- **GitHub**: the repo *Insights → Traffic* tab shows clones and stargazers;
+  the stars badge is in the header.
 
 ## License
 

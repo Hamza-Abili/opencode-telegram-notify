@@ -29,11 +29,13 @@ import {
   DONE_REJECTED,
   ANSWERED_IN_TERMINAL,
   decisionLabel,
+  DONE_ANSWERED,
+  DONE_SKIPPED,
   tr,
 } from "./i18n.ts";
 import { openPollerLock } from "./lock.ts";
-import type { AppContext } from "./context.ts";
-import { replyPermission } from "./context.ts";
+import type { AppContext, PendingForm } from "./context.ts";
+import { replyPermission, replyQuestion } from "./context.ts";
 import { escapeHtml } from "./format.ts";
 import type { TelegramUpdate } from "./telegram.ts";
 import { TelegramError } from "./telegram.ts";
@@ -215,18 +217,30 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
   const messageId = cb.message.message_id;
   const entry = messageId !== undefined ? ctx.pending.get(messageId) : undefined;
 
+  // Question buttons: "q:<index>" answers the form's single field, "qskip"
+  // rejects the question. Same ownership/chat gates as permission taps.
+  if (cb.data && (cb.data === "qskip" || cb.data.startsWith("q:"))) {
+    const formEntry = messageId !== undefined ? ctx.pendingForms.get(messageId) : undefined;
+    if (!formEntry) {
+      await staleCallbackAck(ctx, cb.id, messageId);
+      return;
+    }
+    if (cb.data === "qskip") {
+      await answerForm(ctx, messageId, formEntry, null, cb.id);
+      return;
+    }
+    const label = formEntry.options[Number(cb.data.slice(2))];
+    if (label === undefined) {
+      await staleCallbackAck(ctx, cb.id, messageId);
+      return;
+    }
+    await answerForm(ctx, messageId, formEntry, [label], cb.id);
+    return;
+  }
+
   if (!entry || !cb.data) {
     // Buttons from a previous instance / already settled.
-    try {
-      await ctx.telegram.answerCallbackQuery(cb.id, EXPIRED_OR_STALE[ctx.config.language]);
-      if (messageId !== undefined) {
-        await ctx.telegram
-          .editMessageText(messageId, `<i>${escapeHtml(EXPIRED_OR_STALE[ctx.config.language])}</i>`)
-          .catch(() => undefined);
-      }
-    } catch {
-      // ignore
-    }
+    await staleCallbackAck(ctx, cb.id, messageId);
     return;
   }
 
@@ -269,6 +283,63 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
   }
 }
 
+/** Acknowledge a callback whose target message/button is outdated or settled elsewhere. */
+async function staleCallbackAck(
+  ctx: AppContext,
+  callbackId: string,
+  messageId?: number
+): Promise<void> {
+  try {
+    await ctx.telegram.answerCallbackQuery(callbackId, EXPIRED_OR_STALE[ctx.config.language]);
+    if (messageId !== undefined) {
+      await ctx.telegram
+        .editMessageText(messageId, `<i>${escapeHtml(EXPIRED_OR_STALE[ctx.config.language])}</i>`)
+        .catch(() => undefined);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Settle a pending question from an explicit tap: reply through
+ * question.reply ({@link replyQuestion}), close the message, and fall back to
+ * the "answered elsewhere" wording when the request was settled in the
+ * meantime. Tap-only: the initial message is never a source of answers.
+ */
+async function answerForm(
+  ctx: AppContext,
+  messageId: number,
+  formEntry: PendingForm,
+  labels: string[] | null,
+  callbackId: string
+): Promise<void> {
+  ctx.pendingForms.delete(messageId);
+  try {
+    await replyQuestion(ctx, formEntry.formID, formEntry.sessionID, labels);
+    const text =
+      labels === null ? DONE_SKIPPED[ctx.config.language] : DONE_ANSWERED[ctx.config.language];
+    await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
+    await ctx.telegram.answerCallbackQuery(callbackId, text);
+  } catch (error) {
+    // The most common "failure" is that the question was settled elsewhere.
+    try {
+      await ctx.telegram.answerCallbackQuery(
+        callbackId,
+        ANSWERED_IN_TERMINAL[ctx.config.language]
+      );
+      await ctx.telegram
+        .editMessageText(
+          messageId,
+          `<b>${escapeHtml(ANSWERED_IN_TERMINAL[ctx.config.language])}</b>`
+        )
+        .catch(() => undefined);
+    } catch {
+      // ignore
+    }
+    ctx.logError(`question reply failed: ${String(error)}`);
+  }
+}
 /** Route one Telegram update (commands and callbacks). Exported for tests. */
 export async function dispatch(ctx: AppContext, update: TelegramUpdate): Promise<void> {
   if (update.callback_query) {

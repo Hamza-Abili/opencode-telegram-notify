@@ -14,6 +14,13 @@ export interface PendingPermission {
   action: string;
 }
 
+/** A pending single-select question rendered as tap buttons. */
+export interface PendingForm {
+  formID: string;
+  sessionID: string;
+  options: string[];
+}
+
 export interface AppContext {
   config: AppConfig;
   client: V2Client;
@@ -28,6 +35,8 @@ export interface AppContext {
   sessionDirs: Map<string, string>;
   /** Telegram message id -> pending permission (callback routing). */
   pending: Map<number, PendingPermission>;
+  /** Telegram message id -> pending single-select question (callback routing). */
+  pendingForms: Map<number, PendingForm>;
   /** permission request id -> telegram message id (close notifications). */
   permMsgs: Map<string, number>;
   /** form id -> telegram message id, to close question messages. */
@@ -99,6 +108,76 @@ export async function listPermissions(
     return await perm.list({ sessionID });
   } catch (error) {
     ctx.logError(`permission.list failed: ${String(error)}`);
+    return [];
+  }
+}
+
+/** Loose typing for the session-scoped question fallback of the v2 SDK. */
+interface LooseQuestion {
+  reply?: (input: {
+    requestID: string;
+    answers?: string[][];
+    sessionID?: string;
+    questionV2Reply?: { answers: string[][] };
+  }) => Promise<unknown>;
+  reject?: (input: { requestID: string }) => Promise<unknown>;
+  list?: (input: { directory: string }) => Promise<unknown>;
+}
+
+function questionSurface(ctx: AppContext, scoped?: boolean): LooseQuestion | undefined {
+  if (scoped) {
+    const session = (ctx.client as unknown as { session?: { question?: LooseQuestion } }).session;
+    return session?.question;
+  }
+  return ctx.client.question;
+}
+
+/**
+ * Answer a pending question (form) from a Telegram tap. Mirrors the
+ * permission dual-surface strategy: the global `question.reply` ships first,
+ * the session-scoped `session.question.reply` is the fallback. `null` labels
+ * means "skip" and uses `question.reject`; a missing surface throws.
+ */
+export async function replyQuestion(
+  ctx: AppContext,
+  formID: string,
+  sessionID: string,
+  labels: string[] | null
+): Promise<void> {
+  if (labels === null) {
+    const reject = questionSurface(ctx)?.reject;
+    if (!reject) throw new Error("question reject surface not available");
+    await reject({ requestID: formID });
+    return;
+  }
+  const answer = labels.length === 0 ? undefined : [labels];
+  const surface = questionSurface(ctx);
+  if (surface?.reply) {
+    await surface.reply({ requestID: formID, answers: answer ?? [] });
+    return;
+  }
+  const scoped = questionSurface(ctx, true);
+  if (scoped?.reply) {
+    await scoped.reply({ requestID: formID, sessionID, questionV2Reply: { answers: answer ?? [] } });
+    ctx.log("question reply via session-scoped surface succeeded");
+    return;
+  }
+  throw new Error("question reply surface not available");
+}
+
+/** List pending questions for the plugin root, or an empty array when unavailable. */
+export async function listPendingQuestions(ctx: AppContext): Promise<unknown[]> {
+  const list = questionSurface(ctx)?.list;
+  if (!list) return [];
+  try {
+    const result = await list({ directory: ctx.root });
+    if (Array.isArray(result)) return result;
+    if (result && typeof result === "object" && Array.isArray((result as { items?: unknown[] }).items)) {
+      return (result as { items: unknown[] }).items;
+    }
+    return [];
+  } catch (error) {
+    ctx.logError(`question.list failed: ${String(error)}`);
     return [];
   }
 }

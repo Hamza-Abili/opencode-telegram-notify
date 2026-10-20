@@ -4,7 +4,9 @@
  * Maps opencode v2 events to Telegram notifications:
  *   permission.asked            → 🔐 message + tap-only buttons
  *   permission.replied          → close the notification ("answered")
- *   form.created                → ❓ question (notify-only)
+ *   form.created                → ❓ question: tap buttons for single-select
+ *                                 forms (answer/reject via question.reply),
+ *                                 notify-only otherwise
  *   form.replied / cancelled    → close the question message
  *   session.execution.succeeded → ✅ completed (debounced)
  *   session.execution.failed    → ❌ failed
@@ -18,8 +20,7 @@
  */
 
 import { resolve as resolvePath } from "node:path";
-import type { AppContext } from "./context.ts";
-import { replyPermission } from "./context.ts";
+import { listPendingQuestions, replyPermission, type AppContext } from "./context.ts";
 import * as fmt from "./format.ts";
 import type { InlineButton } from "./telegram.ts";
 import {
@@ -29,6 +30,7 @@ import {
   decisionLabel,
   DONE_ALLOWED,
   DONE_REJECTED,
+  QUESTION_SKIP,
   tr,
 } from "./i18n.ts";import {
   type FormCancelledData,
@@ -56,6 +58,36 @@ function seenSet(): Set<string> {
 }
 
 const seen = seenSet();
+
+/**
+ * Normalize either a wrapped FormCreatedData (event payload shape) or a bare
+ * pending question (question.list item shape) into notify input, or undefined
+ * when the shape is not a recognizable question.
+ */
+function toFormCreatedData(raw: unknown): FormCreatedData | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const item = raw as {
+    form?: { id?: unknown; sessionID?: unknown; title?: unknown; fields?: unknown };
+    id?: unknown;
+    sessionID?: unknown;
+    title?: unknown;
+    fields?: unknown;
+  };
+  if (typeof item.form?.id === "string") return raw as FormCreatedData;
+  if (typeof item.id === "string" && typeof item.sessionID === "string") {
+    return {
+      form: {
+        id: item.id,
+        sessionID: item.sessionID,
+        title: typeof item.title === "string" ? item.title : "",
+        fields: Array.isArray(item.fields)
+          ? (item.fields as FormCreatedData["form"]["fields"])
+          : [],
+      },
+    };
+  }
+  return undefined;
+}
 
 /** @internal clear the process-level dedupe set (test hook). */
 export function resetProcessEventDedupe(): void {
@@ -188,15 +220,53 @@ export function createRouter(ctx: AppContext): {
     }
   }
 
+  /**
+   * The tap-answerable surface covers single-select questions only: exactly
+   * one field with 2..5 options. Everything else stays notify-only; the
+   * message then points back to the terminal (formatQuestion plain mode).
+   */
+  function singleQuestionChoices(form: FormCreatedData["form"]): string[] | undefined {
+    const fields = form.fields ?? [];
+    if (fields.length !== 1) return undefined;
+    const options = fields[0]?.options ?? [];
+    if (options.length < 2 || options.length > 5) return undefined;
+    return options.map((o) => o.label ?? o.value);
+  }
+
+  function questionButtons(choices: string[]): InlineButton[][] {
+    const rows: InlineButton[][] = choices.map((label, i) => [
+      { text: label.slice(0, 60), callback_data: `q:${i}` },
+    ]);
+    rows.push([{ text: QUESTION_SKIP[cfg.language], callback_data: "qskip" }]);
+    return rows;
+  }
+
   async function notifyQuestion(data: unknown): Promise<void> {
     if (ctx.silenced || !cfg.events.question) return;
     const created = data as FormCreatedData;
     const form = created?.form;
     if (!form || typeof form.id !== "string") return;
+    if (ctx.formMsgs.has(form.id)) return; // already notified (restart recovery dedupe)
+    // Register synchronously so a live form.created racing the recovery
+    // startup window cannot duplicate the notification either.
+    ctx.formMsgs.set(form.id, -1);
+    const choices = singleQuestionChoices(form);
+    const buttons = cfg.interactions && choices ? questionButtons(choices) : undefined;
     try {
-      const messageId = await ctx.telegram.sendMessage(fmt.formatQuestion(created, fctx));
+      const messageId = await ctx.telegram.sendMessage(
+        fmt.formatQuestion(created, fctx, choices && buttons ? "buttons" : "plain"),
+        buttons ? { buttons } : {}
+      );
       ctx.formMsgs.set(form.id, messageId ?? -1);
+      if (choices && buttons && messageId !== undefined) {
+        ctx.pendingForms.set(messageId, {
+          formID: form.id,
+          sessionID: form.sessionID,
+          options: choices,
+        });
+      }
     } catch (error) {
+      ctx.formMsgs.delete(form.id); // allow a later retry after a send failure
       ctx.logError(`question notify failed: ${String(error)}`);
     }
   }
@@ -212,6 +282,7 @@ export function createRouter(ctx: AppContext): {
       return;
     }
     ctx.formMsgs.delete(id);
+    ctx.pendingForms.delete(messageId);
     try {
       const label = cancelled ? "⏹️" : "✅";
       await ctx.telegram.editMessageText(
@@ -312,6 +383,20 @@ export function createRouter(ctx: AppContext): {
     for (const t of state.idleTimers.values()) clearTimeout(t);
     state.idleTimers.clear();
   }
+
+  /** Restore tap-buttons for questions that were pending before a restart. */
+  async function recoverPendingQuestions(): Promise<void> {
+    if (ctx.silenced || !cfg.events.question) return;
+    try {
+      for (const raw of await listPendingQuestions(ctx)) {
+        const data = toFormCreatedData(raw);
+        if (data) void notifyQuestion(data);
+      }
+    } catch (error) {
+      ctx.logError(`question recovery failed: ${String(error)}`);
+    }
+  }
+  void recoverPendingQuestions();
 
   return { handle, dispose };
 }

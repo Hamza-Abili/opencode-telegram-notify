@@ -1,9 +1,8 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
+  # Dependency updates are Bun-managed (bun.lock); Dependabot's npm_and_yarn
+  # updater does not understand Bun lockfiles and fails every run, so only
+  # the GitHub Actions ecosystem is tracked here.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

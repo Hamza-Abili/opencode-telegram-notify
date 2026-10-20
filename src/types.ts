@@ -156,6 +156,12 @@ export interface V2Client {
   session?: {
     get(input: { sessionID: string }): Promise<V2SessionInfo>;
   };
+  /** Question (form) surface of the opencode v2 SDK (global namespace). */
+  question?: {
+    reply(input: { requestID: string; answers?: string[][] }): Promise<unknown>;
+    reject?(input: { requestID: string }): Promise<unknown>;
+    list?(input: { directory: string }): Promise<unknown>;
+  };
 }
 
 /** Plugin activation signature per opencode v2 `{id, setup}` contract. */

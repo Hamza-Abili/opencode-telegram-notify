@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 — in-chat question answering (wizard)
+
+- **Answer questions from Telegram**: single-select questions (`form.created`
+  with one option field) now arrive as inline tap buttons; one tap sends
+  `question.reply` (global surface first, session-scoped
+  `session.question.reply` fallback, logged). Tap-only still: nothing is ever
+  auto-submitted.
+- **⏹ Skip button** on questions uses `question.reject`.
+- **Restart recovery**: pending questions are re-listed on activation
+  (`question.list`) and re-rendered with buttons; a later `form.created` for
+  the same form id no longer duplicates the message.
+- Multi-field and free-form questions remain notify-only with the terminal
+  pointer (documented in README "Deferred ideas").
+- Dependabot: npm ecosystem removed (Bun-managed lockfile kept failing weekly
+  updates); GitHub Actions ecosystem stays.
+- Release workflow: npm publish idempotence guard is now name-agnostic
+  (`npm pkg get name`) with a staging-window comment.
+
 ## 0.2.2 — poller offset persistence and redelivery fixes
 
 - Offset now persisted to `poller.offset.json` alongside the lock file; survives

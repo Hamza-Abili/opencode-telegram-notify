@@ -67,6 +67,7 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
     sessionTitles: new Map(),
     sessionDirs: new Map(),
     pending: new Map(),
+    pendingForms: new Map(),
     permMsgs: new Map(),
     formMsgs: new Map(),
     get silenced(): boolean {

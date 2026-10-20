@@ -54,10 +54,14 @@ export function config(overrides: Partial<AppConfig> = {}): AppConfig {
 
 export interface FakeV2Client extends V2Client {
   answered: { sessionID: string; requestID: string; decision: PermissionDecision }[];
+  questionAnswers: { requestID: string; answers?: string[][] }[];
+  questionRejects: { requestID: string }[];
 }
 
 export function fakeClient(root = "/tmp/proj"): FakeV2Client {
   const answered: { sessionID: string; requestID: string; decision: PermissionDecision }[] = [];
+  const questionAnswers: { requestID: string; answers?: string[][] }[] = [];
+  const questionRejects: { requestID: string }[] = [];
   const client = {
     location: { directory: root },
     permission: {
@@ -71,19 +75,36 @@ export function fakeClient(root = "/tmp/proj"): FakeV2Client {
         throw new Error("not found");
       },
     },
+    question: {
+      async reply(input: { requestID: string; answers?: string[][] }) {
+        questionAnswers.push(input);
+      },
+      async reject(input: { requestID: string }) {
+        questionRejects.push({ requestID: input.requestID });
+      },
+      async list() {
+        return [];
+      },
+    },
     event: {
       subscribe() {
         return (async function* () {})();
       },
     },
   };
-  return Object.assign(client as V2Client, { answered });
+  return Object.assign(client as V2Client, {
+    answered,
+    questionAnswers,
+    questionRejects,
+  });
 }
 
 export function mkContext(root = "/tmp/proj", overrides: Partial<AppConfig> = {}): {
   ctx: AppContext;
   calls: FakeTelegramCalls;
   answered: { sessionID: string; requestID: string; decision: PermissionDecision }[];
+  questionAnswers: { requestID: string; answers?: string[][] }[];
+  questionRejects: { requestID: string }[];
 } {
   const { calls, telegram } = fakeTelegram();
   const client = fakeClient(root);
@@ -96,13 +117,20 @@ export function mkContext(root = "/tmp/proj", overrides: Partial<AppConfig> = {}
     sessionTitles: new Map(),
     sessionDirs: new Map(),
     pending: new Map(),
+    pendingForms: new Map(),
     permMsgs: new Map(),
     formMsgs: new Map(),
     silenced: false,
     log: () => undefined,
     logError: () => undefined,
   };
-  return { ctx, calls, answered: client.answered };
+  return {
+    ctx,
+    calls,
+    answered: client.answered,
+    questionAnswers: client.questionAnswers,
+    questionRejects: client.questionRejects,
+  };
 }
 
 export function env(

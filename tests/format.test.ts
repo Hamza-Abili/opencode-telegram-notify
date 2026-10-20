@@ -7,7 +7,7 @@ import {
   formatQuestion,
   truncate,
 } from "../src/format.ts";
-import { ANSWER_IN_TERMINAL } from "../src/i18n.ts";
+import { ANSWER_IN_TERMINAL, ANSWER_WITH_BUTTONS } from "../src/i18n.ts";
 
 const ctx = {
   language: "en" as const,
@@ -84,6 +84,23 @@ describe("formatQuestion", () => {
     expect(msg).toContain("Which env?");
     expect(msg).toContain("• Production");
     expect(msg).toContain(ANSWER_IN_TERMINAL.en);
+  });
+
+  test("buttons mode swaps the terminal pointer for the tap pointer", () => {
+    const msg = formatQuestion(
+      {
+        form: {
+          id: "frm_2",
+          sessionID: "ses_1",
+          title: "Deploy?",
+          fields: [],
+        },
+      },
+      ctx,
+      "buttons"
+    );
+    expect(msg).toContain(ANSWER_WITH_BUTTONS.en);
+    expect(msg).not.toContain(ANSWER_IN_TERMINAL.en);
   });
 });
 
