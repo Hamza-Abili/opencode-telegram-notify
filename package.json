@@ -1,6 +1,6 @@
 {
   "name": "@hamzaabili/opencode-telegram-notify",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "OpenCode plugin (v1 and v2): Telegram notifications for permissions, questions, idle and errors, with tap-only inline buttons (never auto-approve).",
   "type": "module",
   "license": "MIT",
@@ -37,12 +37,15 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
     "test": "bun test",
-    "ci": "bun run typecheck && bun run test"
+    "ci": "bun run lint && bun run typecheck && bun run test"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
-    "@types/bun": "latest"
+    "@biomejs/biome": "^2.5.15",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
   },
   "engines": {
     "bun": ">=1.1.0"

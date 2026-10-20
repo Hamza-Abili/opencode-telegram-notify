@@ -7,12 +7,13 @@
 
 import fs from "node:fs";
 import { basename, resolve as resolvePath } from "node:path";
-import { ConfigError, loadConfig } from "./config.ts";
-import { createLogger, type AppContext } from "./context.ts";
+import { ConfigError, expandEnv, loadConfig } from "./config.ts";
+import { type AppContext, createLogger } from "./context.ts";
 import { createRouter } from "./events.ts";
 import { startPoller } from "./poller.ts";
+import { consumeEvents, subscribeEvents } from "./stream.ts";
 import { TelegramClient } from "./telegram.ts";
-import type { V2Client, V2EventEnvelope } from "./types.ts";
+import type { V2Client } from "./types.ts";
 
 export interface App {
   dispose(): void;
@@ -22,11 +23,17 @@ function noop(): void {}
 
 function logConfigFailure(rawOptions: Record<string, unknown>, error: unknown): void {
   const logFileRaw = rawOptions.logFile;
-  const logFile = typeof logFileRaw === "string" && logFileRaw.trim() !== "" ? logFileRaw.trim() : undefined;
+  const logFile =
+    typeof logFileRaw === "string" && logFileRaw.trim() !== ""
+      ? expandEnv(logFileRaw.trim())
+      : undefined;
   const line = `configuration error: ${error instanceof Error ? error.message : String(error)}`;
   if (logFile) {
     try {
-      fs.appendFileSync(logFile, `${new Date().toISOString()} [opencode-telegram-notify] ${line}\n`);
+      fs.appendFileSync(
+        logFile,
+        `${new Date().toISOString()} [opencode-telegram-notify] ${line}\n`
+      );
     } catch {
       // ignore
     }
@@ -42,7 +49,7 @@ export function createApp(client: V2Client): App {
     const rawOptions = (client.options ?? {}) as Record<string, unknown>;
     logConfigFailure(rawOptions, error);
     if (!(error instanceof ConfigError)) {
-      console.log(`[opencode-telegram-notify] unexpected config error: ${String(error)}`);
+      console.log(`[opencode-telegram-notify] unexpected startup error: ${String(error)}`);
     }
     return { dispose: noop };
   }
@@ -58,6 +65,9 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
   });
 
   let silenced = false;
+  let interactive = false;
+  let router: ReturnType<typeof createRouter> | undefined;
+
   const ctx: AppContext = {
     config,
     client,
@@ -76,38 +86,46 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
     set silenced(value: boolean) {
       silenced = value;
     },
+    get interactive(): boolean {
+      return interactive;
+    },
+    set interactive(value: boolean) {
+      interactive = value;
+    },
     log,
     logError,
   };
 
-  const router = createRouter(ctx);
-  const stopPoller = startPoller(ctx);
-
   const controller = new AbortController();
-  const pump = (async () => {
-    try {
-      const stream = client.event?.subscribe();
-      if (!stream) {
-        logError("client.event.subscribe() unavailable — notifications disabled");
-        return;
-      }
-      for await (const envelope of stream as AsyncIterable<V2EventEnvelope>) {
-        if (controller.signal.aborted) break;
-        await router.handle(envelope);
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        logError(`event stream ended: ${String(error)}`);
-      }
-    }
-  })();
+  // Start the poller before the router so `ctx.interactive` is known before
+  // the first permission/question event is rendered.
+  const stopPoller = startPoller(ctx, {
+    onInteractiveChange(value) {
+      interactive = value;
+      if (value) void router?.recover();
+    },
+  });
+  router = createRouter(ctx, { autoRecover: false });
+  if (interactive) void router.recover();
+
+  const stream = subscribeEvents(client, controller.signal);
+  if (!stream) {
+    logError("client.event.subscribe() unavailable — notifications disabled");
+  } else {
+    void consumeEvents(
+      stream,
+      controller.signal,
+      (envelope) => router?.handle(envelope),
+      (error) => logError(`event stream ended: ${String(error)}`)
+    );
+  }
 
   return {
     dispose(): void {
       controller.abort();
-      router.dispose();
+      router?.dispose();
       stopPoller();
-      void pump;
+      interactive = false;
     },
   };
 }

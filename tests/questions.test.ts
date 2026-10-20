@@ -1,8 +1,8 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { createRouter, resetProcessEventDedupe } from "../src/events.ts";
 import { dispatch, resetProcessUpdateDedupe } from "../src/poller.ts";
-import { env, fakeClient, mkContext } from "./helpers.ts";
 import type { FormCreatedData } from "../src/types.ts";
+import { env, fakeClient, mkContext } from "./helpers.ts";
 
 const CHAT = 5;
 
@@ -89,7 +89,9 @@ describe("questions — notify", () => {
   test("restart recovery re-notifies pending questions from question.list without duplicates", async () => {
     const { ctx, calls } = mkContext();
     const client = fakeClient("/tmp/proj");
-    client.question!.list = async () => [singleSelectForm("frm_pending").form];
+    if (client.question) {
+      client.question.list = async () => [singleSelectForm("frm_pending").form];
+    }
     ctx.client = client;
     const router = createRouter(ctx);
     await new Promise((resolve_) => setTimeout(resolve_, 10)); // recovery is fire-and-forget
@@ -112,7 +114,11 @@ describe("questions — taps", () => {
     built.ctx.pendingForms.set(901, {
       formID: "frm_1",
       sessionID: "ses_1",
-      options: ["Alpha (staging)", "Beta (prod)"],
+      fieldKey: "env",
+      options: [
+        { value: "staging", label: "Alpha (staging)" },
+        { value: "prod", label: "Beta (prod)" },
+      ],
     });
     return built;
   }
@@ -124,6 +130,39 @@ describe("questions — taps", () => {
     expect(calls.edits.some((e) => e.messageId === 901 && e.text.includes("✅"))).toBe(true);
     expect(calls.toasts.some((t) => t.text.includes("✅"))).toBe(true);
     expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("official session.form.reply receives the field key and machine value", async () => {
+    const built = withPendingForm();
+    const { ctx, calls } = built;
+    const replies: unknown[] = [];
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      form: {
+        async reply(input) {
+          replies.push(input);
+        },
+      },
+    };
+    await dispatch(ctx, cbUpdate(901, "q:1"));
+    expect(replies).toEqual([{ sessionID: "ses_1", formID: "frm_1", answer: { env: ["prod"] } }]);
+    expect(calls.edits.some((e) => e.text.includes("✅"))).toBe(true);
+    expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("a transient question failure keeps the pending button active", async () => {
+    const built = withPendingForm();
+    const { ctx, calls } = built;
+    if (ctx.client.question) {
+      ctx.client.question.reply = async () => {
+        throw new Error("network down");
+      };
+    }
+    await dispatch(ctx, cbUpdate(901, "q:0"));
+    expect(calls.toasts.some((t) => t.text.includes("tap again"))).toBe(true);
+    expect(ctx.pendingForms.has(901)).toBe(true);
   });
 
   test("tap qskip rejects through question.reject", async () => {
@@ -153,10 +192,13 @@ describe("questions — taps", () => {
   test("settled question (reply throws) marks 'answered elsewhere'", async () => {
     const built = withPendingForm();
     const { ctx, calls } = built;
-    built.ctx.client.question!.reply = async () => {
-      throw new Error("settled");
-    };
+    if (ctx.client.question) {
+      ctx.client.question.reply = async () => {
+        throw new Error("settled");
+      };
+    }
     await dispatch(ctx, cbUpdate(901, "q:0"));
     expect(calls.toasts.some((t) => t.text.includes("terminal"))).toBe(true);
-    expect(ctx.pendingForms.size).toBe(0);  });
+    expect(ctx.pendingForms.size).toBe(0);
+  });
 });

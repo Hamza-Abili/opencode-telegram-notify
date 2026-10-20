@@ -97,6 +97,12 @@ export interface FormCancelledData {
   sessionID: string;
 }
 
+/** data payload of `session.deleted`. */
+export interface SessionDeletedData {
+  sessionID: string;
+  parentID?: string;
+}
+
 /** data payload of `session.execution.*`. */
 export interface ExecutionData {
   sessionID: string;
@@ -122,14 +128,24 @@ export interface SessionCreatedData {
 
 /* --------------------------------- client -------------------------------- */
 
-export interface V2PermissionRequest {
-  id: string;
+export type PermissionReplyField = "decision" | "reply";
+
+export interface PermissionReplyDecision {
   sessionID: string;
-  action: string;
-  resources: string[];
-  save?: string[];
-  source?: { type: string; messageID?: string; id?: string };
+  requestID: string;
+  decision: PermissionDecision;
+  message?: string;
 }
+
+export interface PermissionReplyCompat {
+  sessionID: string;
+  requestID: string;
+  reply: PermissionDecision;
+  message?: string;
+}
+
+/** Answer payload accepted by the internal form surface. */
+export type FormAnswer = Record<string, string | string[]>;
 
 /**
  * The subset of the opencode v2 plugin client this plugin uses.
@@ -139,33 +155,49 @@ export interface V2Client {
   app?: { name?: string; version?: string; channel?: string };
   /** Per-plugin options from opencode.jsonc (`plugins: [{package, options}]`). */
   options?: Record<string, unknown>;
-  location?: { directory: string; workspaceID?: unknown; project?: { id?: string; canonical?: string } };
+  location?: {
+    directory: string;
+    workspaceID?: unknown;
+    project?: { id?: string; canonical?: string };
+  };
   event?: {
-    subscribe(signal?: AbortSignal): AsyncIterable<V2EventEnvelope>;
+    subscribe(options?: { signal?: AbortSignal } | AbortSignal): AsyncIterable<V2EventEnvelope>;
   };
   permission?: {
-    reply(input: {
-      sessionID: string;
-      requestID: string;
-      decision: PermissionDecision;
-      message?: string;
-    }): Promise<void>;
-    list(input: { sessionID: string }): Promise<V2PermissionRequest[]>;
-    get(input: { sessionID: string; requestID: string }): Promise<V2PermissionRequest>;
+    reply(input: PermissionReplyDecision | PermissionReplyCompat): Promise<void>;
   };
+  /**
+   * Internal hint used by the v1 adapter: which key its permission surface
+   * expects. Undefined means "probe `decision`, then `reply`".
+   */
+  permissionReplyField?: PermissionReplyField;
   session?: {
     get(input: { sessionID: string }): Promise<V2SessionInfo>;
+    /** Newer hosts expose the form API under `session.form`. */
+    form?: {
+      reply(input: { sessionID: string; formID: string; answer: FormAnswer }): Promise<unknown>;
+    };
+    /** Some v2 builds expose question answering under `session.question`. */
+    question?: LooseQuestion;
   };
   /** Question (form) surface of the opencode v2 SDK (global namespace). */
-  question?: {
-    reply(input: { requestID: string; answers?: string[][] }): Promise<unknown>;
-    reject?(input: { requestID: string }): Promise<unknown>;
-    list?(input: { directory: string }): Promise<unknown>;
-  };
+  question?: LooseQuestion;
+}
+
+/** Loose typing for the question fallback surfaces of the v2 SDK. */
+export interface LooseQuestion {
+  reply?: (input: {
+    requestID: string;
+    answers?: string[][];
+    sessionID?: string;
+    questionV2Reply?: { answers: string[][] };
+  }) => Promise<unknown>;
+  reject?: (input: { requestID: string; sessionID?: string }) => Promise<unknown>;
+  list?: (input: { directory: string }) => Promise<unknown>;
 }
 
 /** Plugin activation signature per opencode v2 `{id, setup}` contract. */
-export type V2Setup = (client: V2Client | Promise<V2Client>) => (() => void) | void;
+export type V2Setup = (client: V2Client | Promise<V2Client>) => (() => void) | undefined;
 
 export interface V2PluginDefinition {
   id: string;

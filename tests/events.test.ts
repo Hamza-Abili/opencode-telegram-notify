@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { createRouter, resetProcessEventDedupe } from "../src/events.ts";
 import { env, mkContext, permissionAsked } from "./helpers.ts";
 
@@ -19,12 +19,30 @@ describe("router", () => {
     expect(ctx.permMsgs.get("per_1")).toBe(901);
   });
 
-  test("interactions=false sends without buttons", async () => {
+  test("interactions=false sends without buttons and points to the terminal", async () => {
     const { ctx, calls } = mkContext("/tmp/proj", { interactions: false });
     const router = createRouter(ctx);
     await router.handle(env("e1", "permission.asked", permissionAsked("per_1")));
     expect(calls.sent).toHaveLength(1);
     expect(calls.sent[0].buttons).toBeUndefined();
+    expect(calls.sent[0].text).toContain("⌨️");
+  });
+
+  test("a standby instance sends notify-only permission messages", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.interactive = false;
+    const router = createRouter(ctx);
+    await router.handle(env("e1", "permission.asked", permissionAsked("per_1")));
+    expect(calls.sent[0].buttons).toBeUndefined();
+    expect(ctx.pending.size).toBe(0);
+  });
+
+  test("the same permission id is never notified twice", async () => {
+    const { ctx, calls } = mkContext();
+    const router = createRouter(ctx);
+    await router.handle(env("e1", "permission.asked", permissionAsked("per_1")));
+    await router.handle(env("e2", "permission.asked", permissionAsked("per_1")));
+    expect(calls.sent).toHaveLength(1);
   });
 
   test("duplicate event ids are processed once", async () => {
@@ -79,8 +97,12 @@ describe("router", () => {
       })
     );
     expect(calls.sent[0].text).toContain("Deploy?");
-    await router.handle({ id: "f2", type: "form.replied", data: { id: "frm_1", sessionID: "ses_1" } });
-    expect(calls.edits[0].text).toContain("answered");
+    await router.handle({
+      id: "f2",
+      type: "form.replied",
+      data: { id: "frm_1", sessionID: "ses_1" },
+    });
+    expect(calls.edits[0].text).toContain("Answered");
   });
 
   test("form.cancelled closes with cancelled label", async () => {
@@ -91,8 +113,12 @@ describe("router", () => {
         form: { id: "frm_2", sessionID: "ses_1", title: "Deploy?", fields: [] },
       })
     );
-    await router.handle({ id: "f2", type: "form.cancelled", data: { id: "frm_2", sessionID: "ses_1" } });
-    expect(calls.edits[0].text).toContain("cancelled");
+    await router.handle({
+      id: "f2",
+      type: "form.cancelled",
+      data: { id: "frm_2", sessionID: "ses_1" },
+    });
+    expect(calls.edits[0].text).toContain("Cancelled");
   });
 
   test("idle debounce fires completed only after silence", async () => {
@@ -111,7 +137,9 @@ describe("router", () => {
     const router = createRouter(ctx);
     await router.handle(env("x1", "session.created", { sessionID: "ses_2", title: "Pipeline" }));
     await router.handle(env("x2", "session.execution.succeeded", { sessionID: "ses_2" }));
-    await router.handle(env("x3", "session.step.started", { sessionID: "ses_2", assistantMessageID: "m" }));
+    await router.handle(
+      env("x3", "session.step.started", { sessionID: "ses_2", assistantMessageID: "m" })
+    );
     await new Promise((r) => setTimeout(r, 40));
     expect(calls.sent).toHaveLength(0);
   });
@@ -157,10 +185,25 @@ describe("router", () => {
     expect(completed?.text).not.toContain("(no details)");
   });
 
+  test("session.deleted clears title, attribution and pending button state", async () => {
+    const { ctx } = mkContext();
+    const router = createRouter(ctx);
+    await router.handle(env("c1", "session.created", { sessionID: "ses_d", title: "Gone" }));
+    await router.handle(env("p1", "permission.asked", permissionAsked("per_d", "ses_d")));
+    const messageId = ctx.permMsgs.get("per_d") as number;
+    expect(ctx.pending.has(messageId)).toBe(true);
+    await router.handle({ id: "d1", type: "session.deleted", data: { sessionID: "ses_d" } });
+    expect(ctx.sessionTitles.has("ses_d")).toBe(false);
+    expect(ctx.sessionDirs.has("ses_d")).toBe(false);
+    expect(ctx.pending.has(messageId)).toBe(false);
+  });
+
   test("child sessions never send lifecycle notifications", async () => {
     const { ctx, calls } = mkContext();
     const router = createRouter(ctx);
-    await router.handle(env("c1", "session.created", { sessionID: "ses_c", parentID: "ses_p", title: "sub" }));
+    await router.handle(
+      env("c1", "session.created", { sessionID: "ses_c", parentID: "ses_p", title: "sub" })
+    );
     await router.handle(env("c2", "session.execution.succeeded", { sessionID: "ses_c" }));
     await new Promise((r) => setTimeout(r, 40));
     expect(calls.sent).toHaveLength(0);

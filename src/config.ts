@@ -30,8 +30,6 @@ export interface AppConfig {
   idleDebounceMs: number;
   /** Minimum gap between completion notifications for the same session (ms); 0 disables. */
   idleCooldownMs: number;
-  /** Time-to-live for duplicate notification suppression (ms). */
-  dedupTtlMs: number;
   /** Maximum characters of a formatted message body. */
   maxMessageChars: number;
   /** Hide command/tool args from notification bodies (privacy). */
@@ -48,20 +46,24 @@ export class ConfigError extends Error {
 }
 
 /** Resolve `${VAR}` references inside a string against the environment. */
-export function expandEnv(value: string, env: Record<string, string | undefined> = process.env): string {
+export function expandEnv(
+  value: string,
+  env: Record<string, string | undefined> = process.env
+): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => env[name] ?? "");
 }
 
 function asBool(value: unknown, fallback: boolean): boolean {
-  if (value === true || value === "true" || value === 1) return true;
-  if (value === false || value === "false" || value === 0) return false;
+  if (value === true || value === "true" || value === "1" || value === 1) return true;
+  if (value === false || value === "false" || value === "0" || value === 0) return false;
   return fallback;
 }
 
 function asNumber(value: unknown, fallback: number, min: number, max: number): number {
-  const n = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
+  return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
 function asStringList(value: unknown): string[] {
@@ -85,7 +87,10 @@ function asStringList(value: unknown): string[] {
  * `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `TELEGRAM_LANGUAGE` act as
  * fallbacks for the corresponding values.
  */
-export function loadConfig(raw: unknown, env: Record<string, string | undefined> = process.env): AppConfig {
+export function loadConfig(
+  raw: unknown,
+  env: Record<string, string | undefined> = process.env
+): AppConfig {
   const root = (raw ?? {}) as Record<string, unknown>;
   const tg = (root.telegram ?? {}) as Record<string, unknown>;
   const events = (root.events ?? {}) as Record<string, unknown>;
@@ -95,28 +100,37 @@ export function loadConfig(raw: unknown, env: Record<string, string | undefined>
   if (botToken === "") botToken = env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
   if (botToken === "") {
     throw new ConfigError(
-      'options.telegram.botToken is required (use "${TELEGRAM_BOT_TOKEN}" to read it from the environment)'
+      "options.telegram.botToken is required (use " +
+        "${TELEGRAM_BOT_TOKEN} to read it from the environment)"
     );
   }
   if (!botToken.includes(":")) {
-    throw new ConfigError("options.telegram.botToken does not look like a Telegram token (<id>:<secret>)");
+    throw new ConfigError(
+      "options.telegram.botToken does not look like a Telegram token (<id>:<secret>)"
+    );
   }
 
-  const chatIdRaw = expandEnv(String(tg.chatId ?? ""), env).trim() || env.TELEGRAM_CHAT_ID?.trim() || "";
+  const chatIdRaw =
+    expandEnv(String(tg.chatId ?? ""), env).trim() || env.TELEGRAM_CHAT_ID?.trim() || "";
   if (chatIdRaw === "") {
     throw new ConfigError(
-      'options.telegram.chatId is required (use "${TELEGRAM_CHAT_ID}" to read it from the environment)'
+      "options.telegram.chatId is required (use " +
+        "${TELEGRAM_CHAT_ID} to read it from the environment)"
     );
   }
 
   const language =
-    root.language === "it" || (!root.language && env.TELEGRAM_LANGUAGE?.trim() === "it") ? "it" : "en";
+    root.language === "it" || (!root.language && env.TELEGRAM_LANGUAGE?.trim() === "it")
+      ? "it"
+      : "en";
 
   return {
     telegram: {
       botToken,
       chatId: chatIdRaw,
-      allowedUserIds: asStringList(tg.allowedUserIds).map((v) => expandEnv(v, env).trim()),
+      allowedUserIds: asStringList(tg.allowedUserIds)
+        .map((v) => expandEnv(v, env).trim())
+        .filter((v) => v.length > 0),
     },
     language,
     events: {
@@ -128,7 +142,6 @@ export function loadConfig(raw: unknown, env: Record<string, string | undefined>
     interactions: asBool(root.interactions, true),
     idleDebounceMs: asNumber(root.idleDebounceMs, 60_000, 0, 600_000),
     idleCooldownMs: asNumber(root.idleCooldownMs, 600_000, 0, 3_600_000),
-    dedupTtlMs: asNumber(root.dedupTtlMs, 120_000, 0, 900_000),
     maxMessageChars: asNumber(root.maxMessageChars, 3800, 500, 3900),
     hideCommands: asBool(root.hideCommands, false),
     logFile:

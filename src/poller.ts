@@ -15,28 +15,39 @@
  * additional protection against redelivery within the same process lifetime.
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import fs from "node:fs";
+import type { AppContext, FormChoice, PendingForm } from "./context.ts";
+import { isSettledError, replyPermission, replyQuestion } from "./context.ts";
+import { escapeHtml } from "./format.ts";
 import {
+  ANSWERED_IN_TERMINAL,
+  COMMAND_HELP,
+  COMMAND_SETUP,
+  COMMAND_START,
+  COMMAND_STATUS,
+  COMMAND_STOP,
+  DONE_ALLOWED,
+  DONE_ANSWERED,
+  DONE_REJECTED,
+  DONE_SKIPPED,
+  decisionLabel,
+  EVENTS_LABEL,
+  EXPIRED_OR_STALE,
   HELP,
   PROJECT,
+  REPLY_FAILED_RETRY,
   SHUTTING_DONE,
   START,
+  STATUS_ACTIVE,
+  STATUS_INTERACTIVE,
   STATUS_ONLINE,
-  EXPIRED_OR_STALE,
-  DONE_ALLOWED,
-  DONE_REJECTED,
-  ANSWERED_IN_TERMINAL,
-  decisionLabel,
-  DONE_ANSWERED,
-  DONE_SKIPPED,
+  STATUS_SILENCED,
+  STATUS_STANDBY,
   tr,
 } from "./i18n.ts";
 import { openPollerLock } from "./lock.ts";
-import type { AppContext, PendingForm } from "./context.ts";
-import { replyPermission, replyQuestion } from "./context.ts";
-import { escapeHtml } from "./format.ts";
 import type { TelegramUpdate } from "./telegram.ts";
 import { TelegramError } from "./telegram.ts";
 import type { PermissionDecision } from "./types.ts";
@@ -46,6 +57,15 @@ export interface PollerOptions {
   lockDir?: string;
   /** How many seconds to wait on getUpdates long polling. */
   longPollSeconds?: number;
+  /** Back-off while another instance owns the lock (ms). */
+  acquireDelayMs?: number;
+  /** Back-off after a 409 / other failure (ms). */
+  standstillMs?: number;
+  failureDelayMs?: number;
+  /** Pause between empty long-poll cycles (ms). */
+  pollIntervalMs?: number;
+  /** Called when this activation gains/loses poller ownership. */
+  onInteractiveChange?: (interactive: boolean) => void;
 }
 
 const POLL_ACQUIRE_DELAY_MS = 15_000;
@@ -80,7 +100,11 @@ function readOffset(lockDir: string): number {
   try {
     const raw = fs.readFileSync(offsetFilePath(lockDir), "utf8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0) {
+    if (
+      typeof parsed.offset === "number" &&
+      Number.isInteger(parsed.offset) &&
+      parsed.offset >= 0
+    ) {
       return parsed.offset;
     }
   } catch {
@@ -92,10 +116,10 @@ function readOffset(lockDir: string): number {
 function writeOffset(lockDir: string, offset: number): void {
   try {
     fs.mkdirSync(lockDir, { recursive: true });
-    const tmp = offsetFilePath(lockDir) + ".tmp";
+    const tmp = `${offsetFilePath(lockDir)}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify({ offset }));
     fs.renameSync(tmp, offsetFilePath(lockDir));
-  } catch (error) {
+  } catch {
     // best effort; next successful write will catch up
   }
 }
@@ -143,15 +167,13 @@ function setupSnippet(ctx: AppContext): string {
 }
 
 async function handleCommand(ctx: AppContext, command: string, chatId: number): Promise<void> {
-  const [raw, ..._rest] = command.split(/\s+/);
+  const raw = command.split(/\s+/, 1)[0];
   const cmd = (raw ?? "").replace(/@\S+$/, "").toLowerCase();
   try {
     switch (cmd) {
       case "/start": {
         ctx.silenced = false;
-        await ctx.telegram.sendMessage(
-          tr(ctx.config.language, START, { chatId: String(chatId) })
-        );
+        await ctx.telegram.sendMessage(tr(ctx.config.language, START, { chatId: String(chatId) }));
         return;
       }
       case "/stop": {
@@ -168,11 +190,13 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
         ]
           .filter(Boolean)
           .join(", ");
+        const lang = ctx.config.language;
         const text = [
-          STATUS_ONLINE[ctx.config.language],
-          `${PROJECT[ctx.config.language]}: <b>${escapeHtml(ctx.project)}</b>`,
-          ctx.silenced ? "🔕 silenced (use /start)" : "🔔 notifications active",
-          `events: ${events}`,
+          STATUS_ONLINE[lang],
+          `${PROJECT[lang]}: <b>${escapeHtml(ctx.project)}</b>`,
+          ctx.silenced ? STATUS_SILENCED[lang] : STATUS_ACTIVE[lang],
+          ctx.interactive ? STATUS_INTERACTIVE[lang] : STATUS_STANDBY[lang],
+          `${EVENTS_LABEL[lang]}: ${events}`,
         ].join("\n");
         await ctx.telegram.sendMessage(text);
         return;
@@ -210,7 +234,7 @@ async function handleMessage(ctx: AppContext, update: TelegramUpdate): Promise<v
 
 async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<void> {
   const cb = update.callback_query;
-  if (!cb || !cb.message) return;
+  if (!cb?.message) return;
   if (!sameChat(ctx, cb.message.chat?.id)) return;
   if (!userAllowed(ctx, cb.from?.id)) return;
 
@@ -229,12 +253,12 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
       await answerForm(ctx, messageId, formEntry, null, cb.id);
       return;
     }
-    const label = formEntry.options[Number(cb.data.slice(2))];
-    if (label === undefined) {
+    const choice = formEntry.options[Number(cb.data.slice(2))];
+    if (choice === undefined) {
       await staleCallbackAck(ctx, cb.id, messageId);
       return;
     }
-    await answerForm(ctx, messageId, formEntry, [label], cb.id);
+    await answerForm(ctx, messageId, formEntry, choice, cb.id);
     return;
   }
 
@@ -254,15 +278,14 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
     return;
   }
 
-  ctx.pending.delete(messageId);
+  const lang = ctx.config.language;
   try {
     await replyPermission(ctx, entry.sessionID, entry.requestID, decision);
+    ctx.pending.delete(messageId);
     const text =
       decision === "reject"
-        ? DONE_REJECTED[ctx.config.language]
-        : tr(ctx.config.language, DONE_ALLOWED, {
-            decision: decisionLabel(ctx.config.language, decision),
-          });
+        ? DONE_REJECTED[lang]
+        : tr(lang, DONE_ALLOWED, { decision: decisionLabel(lang, decision) });
     try {
       await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
       await ctx.telegram.answerCallbackQuery(cb.id, text);
@@ -270,14 +293,24 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
       ctx.logError(`edit/ack after reply failed: ${String(editError)}`);
     }
   } catch (error) {
-    // The most common "failure" is that the request was settled elsewhere.
-    try {
-      await ctx.telegram.answerCallbackQuery(cb.id, ANSWERED_IN_TERMINAL[ctx.config.language]);
-      await ctx.telegram
-        .editMessageText(messageId, `<b>${escapeHtml(ANSWERED_IN_TERMINAL[ctx.config.language])}</b>`)
-        .catch(() => undefined);
-    } catch {
-      // ignore
+    if (isSettledError(error)) {
+      ctx.pending.delete(messageId);
+      try {
+        await ctx.telegram.answerCallbackQuery(cb.id, ANSWERED_IN_TERMINAL[lang]);
+        await ctx.telegram
+          .editMessageText(messageId, `<b>${escapeHtml(ANSWERED_IN_TERMINAL[lang])}</b>`)
+          .catch(() => undefined);
+      } catch {
+        // ignore
+      }
+    } else {
+      // Keep the pending entry: the user can tap again after a transient
+      // network/server failure instead of losing the only interactive path.
+      try {
+        await ctx.telegram.answerCallbackQuery(cb.id, REPLY_FAILED_RETRY[lang]);
+      } catch {
+        // ignore
+      }
     }
     ctx.logError(`permission reply failed: ${String(error)}`);
   }
@@ -311,31 +344,33 @@ async function answerForm(
   ctx: AppContext,
   messageId: number,
   formEntry: PendingForm,
-  labels: string[] | null,
+  choice: FormChoice | null,
   callbackId: string
 ): Promise<void> {
-  ctx.pendingForms.delete(messageId);
+  const lang = ctx.config.language;
   try {
-    await replyQuestion(ctx, formEntry.formID, formEntry.sessionID, labels);
-    const text =
-      labels === null ? DONE_SKIPPED[ctx.config.language] : DONE_ANSWERED[ctx.config.language];
+    await replyQuestion(ctx, formEntry.formID, formEntry.sessionID, formEntry.fieldKey, choice);
+    ctx.pendingForms.delete(messageId);
+    const text = choice === null ? DONE_SKIPPED[lang] : DONE_ANSWERED[lang];
     await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
     await ctx.telegram.answerCallbackQuery(callbackId, text);
   } catch (error) {
-    // The most common "failure" is that the question was settled elsewhere.
-    try {
-      await ctx.telegram.answerCallbackQuery(
-        callbackId,
-        ANSWERED_IN_TERMINAL[ctx.config.language]
-      );
-      await ctx.telegram
-        .editMessageText(
-          messageId,
-          `<b>${escapeHtml(ANSWERED_IN_TERMINAL[ctx.config.language])}</b>`
-        )
-        .catch(() => undefined);
-    } catch {
-      // ignore
+    if (isSettledError(error)) {
+      ctx.pendingForms.delete(messageId);
+      try {
+        await ctx.telegram.answerCallbackQuery(callbackId, ANSWERED_IN_TERMINAL[lang]);
+        await ctx.telegram
+          .editMessageText(messageId, `<b>${escapeHtml(ANSWERED_IN_TERMINAL[lang])}</b>`)
+          .catch(() => undefined);
+      } catch {
+        // ignore
+      }
+    } else {
+      try {
+        await ctx.telegram.answerCallbackQuery(callbackId, REPLY_FAILED_RETRY[lang]);
+      } catch {
+        // ignore
+      }
     }
     ctx.logError(`question reply failed: ${String(error)}`);
   }
@@ -359,20 +394,41 @@ export async function dispatch(ctx: AppContext, update: TelegramUpdate): Promise
 export function startPoller(ctx: AppContext, options: PollerOptions = {}): () => void {
   const lockDir = options.lockDir ?? defaultLockDir();
   const longPoll = options.longPollSeconds ?? 20;
+  const acquireDelay = options.acquireDelayMs ?? POLL_ACQUIRE_DELAY_MS;
+  const standstill = options.standstillMs ?? STANDSTILL_MS;
+  const failureDelay = options.failureDelayMs ?? FAILURE_DELAY_MS;
+  const pollInterval = options.pollIntervalMs ?? 250;
   const lock = openPollerLock(lockDir, { log: ctx.log });
 
   let running = true;
+  let owned = false;
   let commandsRegistered = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let offset = readOffset(lockDir);
 
+  function setInteractive(value: boolean): void {
+    if (owned === value) return;
+    owned = value;
+    ctx.interactive = value;
+    try {
+      options.onInteractiveChange?.(value);
+    } catch (error) {
+      ctx.logError(`interactive callback failed: ${String(error)}`);
+    }
+  }
+
   const loopDone = (async () => {
     while (running) {
       if (!lock.tryAcquire()) {
-        await sleep(POLL_ACQUIRE_DELAY_MS);
+        setInteractive(false);
+        await sleep(acquireDelay);
         continue;
       }
-      if (running && !heartbeat) {
+      // A standby instance may have advanced the shared offset while we were
+      // waiting; never replay updates it already handled.
+      offset = Math.max(offset, readOffset(lockDir));
+      setInteractive(true);
+      if (!heartbeat) {
         heartbeat = setInterval(lock.heartbeat, 10_000);
         // v1 hosts have no plugin dispose chain: never keep a server process
         // alive just because of a poller heartbeat.
@@ -380,12 +436,13 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
       }
       if (!commandsRegistered) {
         try {
+          const lang = ctx.config.language;
           await ctx.telegram.setMyCommands([
-            { command: "start", description: "Connect + chat id" },
-            { command: "status", description: "Plugin status" },
-            { command: "setup", description: "Copy-paste config" },
-            { command: "stop", description: "Silence until /start" },
-            { command: "help", description: "What this bot does" },
+            { command: "start", description: COMMAND_START[lang] },
+            { command: "status", description: COMMAND_STATUS[lang] },
+            { command: "setup", description: COMMAND_SETUP[lang] },
+            { command: "stop", description: COMMAND_STOP[lang] },
+            { command: "help", description: COMMAND_HELP[lang] },
           ]);
           commandsRegistered = true;
         } catch (error) {
@@ -412,17 +469,18 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         if (error instanceof TelegramError && error.code === 409) {
           // Another process on the host is polling; stand by until it stops.
           lock.release();
-          await sleep(STANDSTILL_MS);
+          setInteractive(false);
+          await sleep(standstill);
           continue;
         }
         // Non-409 error: do not advance offset, retry with same offset next cycle
         ctx.logError(`getUpdates failed: ${String(error)}`);
-        await sleep(FAILURE_DELAY_MS);
+        await sleep(failureDelay);
       }
       // Short pause between long-poll cycles: keeps the loop off the CPU when
       // updates come back empty and (in tests or offline mode) prevents a
       // microtask-only spin from starving timers.
-      if (running) await sleep(250);
+      if (running) await sleep(pollInterval);
     }
   })().catch((error) => {
     ctx.logError(`poller crashed: ${String(error)}`);
@@ -430,6 +488,7 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
 
   return () => {
     running = false;
+    setInteractive(false);
     if (heartbeat) clearInterval(heartbeat);
     lock.release();
     void loopDone;

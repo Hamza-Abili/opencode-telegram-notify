@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0 — reliability, safety and ergonomics
+
+- **Event stream cancellation**: proper `AbortSignal` integration with
+  `subscribe({ signal })`, positional fallback, and iterator `return()` on
+  dispose — works on official 2.0.32 and is forward-compatible.
+- **Poller lock hardening**: per-activation token in the lock file prevents
+  same-process double-release; atomic heartbeat via tmp+rename; stale-lock
+  recovery now tolerates torn writes without deadlocking.
+- **Permission reply shape caching**: first successful `decision`/`reply`
+  key is remembered per activation, eliminating repeated fallback probes.
+- **Pending reply semantics**: transient failures (network, 5xx) keep the
+  button active for retry; settled errors (404/409, "already answered") close
+  the message with "already answered" toast.
+- **Multi-instance honesty**: only the poller lock owner attaches interactive
+  buttons; standby instances send notify-only messages with a terminal hint.
+  `/status` shows interactive/standby state.
+- **Session cleanup**: `session.deleted` events clear titles, attribution
+  indexes and pending button state; all caches bounded (500 entries) to
+  prevent unbounded growth on long-running hosts.
+- **HTML-safe truncation**: `truncateHtml()` never cuts tags/entities and
+  closes open tags when `maxMessageChars` forces a cut.
+- **Config fixes**: `allowedUserIds` expansion drops empty entries; numeric
+  parsing rejects partial strings (`"15s"` → fallback); `dedupTtlMs` removed.
+- **i18n polish**: per-session cooldown never spams; new strings for
+  `PERMISSION_ANSWER_IN_TERMINAL`, `REPLY_FAILED_RETRY`, `/status` labels,
+  command descriptions; Italian translations updated.
+- **Test isolation**: poller tests use unique temp dirs (`mkdtempSync`) and
+  fast timers (`longPollSeconds: 0`, `pollIntervalMs: 5`), eliminating
+  flakiness from shared state.
+- **Code quality**: Biome lint/format added (`biome.json`, `lint`, `format`
+  scripts); dead code removed (`formatError`, `listPermissions`, `TITLE`,
+  `dedupTtlMs`, `TelegramError` re-export); types aligned with official
+  `@opencode/plugin@2.0.32` surfaces.
+
 ## 0.3.1 — no more completion spam
 
 - **Per-session completion cooldown** (`idleCooldownMs`, default 10 min):

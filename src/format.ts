@@ -3,7 +3,6 @@
  * All user- or tool-supplied values are escaped before embedding.
  */
 
-import type { FormCreatedData, PermissionAskedData } from "./types.ts";
 import type { Language } from "./config.ts";
 import {
   ANSWER_IN_TERMINAL,
@@ -11,13 +10,14 @@ import {
   CANCELLED,
   COMPLETED,
   EMPTY,
-  ERROR,
   FAILED,
   PERMISSION,
+  PERMISSION_ANSWER_IN_TERMINAL,
   PROJECT,
   QUESTION,
   SESSION,
 } from "./i18n.ts";
+import type { FormCreatedData, PermissionAskedData } from "./types.ts";
 
 const ELLIPSIS = "…";
 
@@ -28,6 +28,59 @@ export function escapeHtml(value: string): string {
 export function truncate(value: string, max: number): string {
   if (value.length <= max) return value;
   return `${value.slice(0, Math.max(0, max - ELLIPSIS.length))}${ELLIPSIS}`;
+}
+
+/**
+ * Truncate an already-escaped HTML fragment without cutting a tag or an
+ * entity in half. Open tags are closed so Telegram never receives malformed
+ * markup when `maxMessageChars` is small.
+ */
+export function truncateHtml(value: string, max: number): string {
+  if (value.length <= max) return value;
+
+  const build = (limit: number): string => {
+    let out = "";
+    let i = 0;
+    const open: string[] = [];
+    while (i < limit) {
+      if (value[i] === "<") {
+        const end = value.indexOf(">", i);
+        if (end === -1 || end + 1 > limit) break;
+        const tag = value.slice(i, end + 1);
+        const name = /^<\/?([a-z0-9]+)/i.exec(tag)?.[1]?.toLowerCase();
+        if (name) {
+          if (tag.startsWith("</")) {
+            const at = open.lastIndexOf(name);
+            if (at !== -1) open.splice(at, 1);
+          } else if (!tag.endsWith("/>")) {
+            open.push(name);
+          }
+        }
+        out += tag;
+        i = end + 1;
+        continue;
+      }
+      if (value[i] === "&") {
+        const end = value.indexOf(";", i);
+        if (end === -1 || end - i > 10 || end + 1 > limit) break;
+        out += value.slice(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      out += value[i];
+      i++;
+    }
+    out = `${out.trimEnd()}${ELLIPSIS}`;
+    for (let j = open.length - 1; j >= 0; j--) out += `</${open[j]}>`;
+    return out;
+  };
+
+  let limit = Math.max(1, max - ELLIPSIS.length);
+  for (;;) {
+    const candidate = build(limit);
+    if (candidate.length <= max || limit <= 1) return candidate;
+    limit = Math.max(1, limit - (candidate.length - max) - 1);
+  }
 }
 
 function bullets(items: string[], max = 3): string {
@@ -43,12 +96,7 @@ export interface FormatContext {
   sessionTitle?: (sessionID: string) => string | undefined;
 }
 
-function header(
-  title: string,
-  ctx: FormatContext,
-  sessionID?: string,
-  project?: string
-): string {
+function header(title: string, ctx: FormatContext, sessionID?: string, project?: string): string {
   const lines = [`<b>${title}</b>`];
   const who: string[] = [];
   if (project) who.push(`${PROJECT[ctx.language]}: ${escapeHtml(project)}`);
@@ -59,13 +107,18 @@ function header(
 }
 
 /** Permission request message body (buttons are added by the caller). */
-export function formatPermission(data: PermissionAskedData, ctx: FormatContext): string {
+export function formatPermission(
+  data: PermissionAskedData,
+  ctx: FormatContext,
+  mode: "plain" | "buttons" = "plain"
+): string {
   const head = header(PERMISSION[ctx.language], ctx, data.sessionID);
   const resources = ctx.hideCommands
     ? `<i>[${data.resources?.length ?? 0}]</i>`
     : bullets(data.resources ?? []);
   const body = [head, `<b>${escapeHtml(data.action)}</b>`, resources];
-  return truncate(body.join("\n"), ctx.maxBody);
+  if (mode === "plain") body.push("", PERMISSION_ANSWER_IN_TERMINAL[ctx.language]);
+  return truncateHtml(body.join("\n"), ctx.maxBody);
 }
 
 /** Question (form) message body: notify-only in this release. */
@@ -92,17 +145,23 @@ export function formatQuestion(
   }
   if (fields.length > 5) body.push(`<i>+${fields.length - 5}</i>`);
   body.push("");
-  body.push(mode === "buttons" ? ANSWER_WITH_BUTTONS[ctx.language] : ANSWER_IN_TERMINAL[ctx.language]);
-  return truncate(body.join("\n"), ctx.maxBody);
+  body.push(
+    mode === "buttons" ? ANSWER_WITH_BUTTONS[ctx.language] : ANSWER_IN_TERMINAL[ctx.language]
+  );
+  return truncateHtml(body.join("\n"), ctx.maxBody);
 }
 
 /** Task lifecycle notifications. */
-export function formatCompleted(sessionID: string, title: string | undefined, ctx: FormatContext): string {
+export function formatCompleted(
+  sessionID: string,
+  title: string | undefined,
+  ctx: FormatContext
+): string {
   const body = [
     header(COMPLETED[ctx.language], ctx, sessionID),
     title ? escapeHtml(truncate(title, 120)) : EMPTY[ctx.language],
   ];
-  return truncate(body.join("\n"), ctx.maxBody);
+  return truncateHtml(body.join("\n"), ctx.maxBody);
 }
 
 export function formatFailed(
@@ -111,16 +170,9 @@ export function formatFailed(
 ): string {
   const kind = error?.type ? ` <code>${escapeHtml(error.type)}</code>` : "";
   const msg = error?.message ? escapeHtml(truncate(error.message, 400)) : EMPTY[ctx.language];
-  return truncate([header(FAILED[ctx.language], ctx), kind, msg].join("\n"), ctx.maxBody);
+  return truncateHtml([header(FAILED[ctx.language], ctx), kind, msg].join("\n"), ctx.maxBody);
 }
 
 export function formatCancelled(sessionID: string, ctx: FormatContext): string {
-  return truncate(header(CANCELLED[ctx.language], ctx, sessionID), ctx.maxBody);
-}
-
-export function formatError(message: string, ctx: FormatContext): string {
-  return truncate(
-    [`<b>${ERROR[ctx.language]}</b>`, escapeHtml(truncate(message, 400))].join("\n"),
-    ctx.maxBody
-  );
+  return truncateHtml(header(CANCELLED[ctx.language], ctx, sessionID), ctx.maxBody);
 }

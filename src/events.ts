@@ -20,31 +20,53 @@
  */
 
 import { resolve as resolvePath } from "node:path";
-import { listPendingQuestions, replyPermission, sessionTitle, type AppContext } from "./context.ts";
+import { type AppContext, type FormChoice, listPendingQuestions, sessionTitle } from "./context.ts";
 import * as fmt from "./format.ts";
-import type { InlineButton } from "./telegram.ts";
 import {
   ANSWER_ALWAYS,
   ANSWER_ONCE,
   ANSWER_REJECT,
-  decisionLabel,
   DONE_ALLOWED,
+  DONE_ANSWERED,
+  DONE_CANCELLED,
   DONE_REJECTED,
+  decisionLabel,
   QUESTION_SKIP,
   tr,
-} from "./i18n.ts";import {
-  type FormCancelledData,
-  type FormCreatedData,
-  type FormRepliedData,
-  type ExecutionData,
-  type PermissionAskedData,
-  type PermissionRepliedData,
-  type SessionCreatedData,
-  type V2EventEnvelope,
+} from "./i18n.ts";
+import type { InlineButton } from "./telegram.ts";
+import type {
+  ExecutionData,
+  FormCancelledData,
+  FormCreatedData,
+  FormRepliedData,
+  PermissionAskedData,
+  PermissionRepliedData,
+  SessionCreatedData,
+  SessionDeletedData,
+  V2EventEnvelope,
 } from "./types.ts";
 
 const SEEN_SYMBOL = Symbol.for("opencode-telegram-notify/seen-events");
 const SEEN_MAX = 2000;
+const CACHE_MAX = 500;
+
+/** Drop oldest insertion-order entries so long-lived hosts stay bounded. */
+function trimMap<K, V>(map: Map<K, V>, max = CACHE_MAX): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) return;
+    map.delete(oldest);
+  }
+}
+
+function trimSet<T>(set: Set<T>, max = CACHE_MAX): void {
+  while (set.size > max) {
+    const oldest = set.values().next().value;
+    if (oldest === undefined) return;
+    set.delete(oldest);
+  }
+}
 
 /** Process-level seen-event registry; survives plugin reloads in one process. */
 function seenSet(): Set<string> {
@@ -135,13 +157,23 @@ function permissionButtons(lang: "en" | "it"): InlineButton[][] {
   ];
 }
 
-export function createRouter(ctx: AppContext): {
+export interface RouterOptions {
+  /** Tests and the app call recover() when this instance owns the poller. */
+  autoRecover?: boolean;
+}
+
+export function createRouter(
+  ctx: AppContext,
+  options: RouterOptions = {}
+): {
   handle: (envelope: V2EventEnvelope) => Promise<void>;
   dispose: () => void;
+  recover: () => Promise<void>;
 } {
   const state: RouterState = { idleTimers: new Map(), idleSentAt: new Map(), children: new Set() };
 
   const cfg = ctx.config;
+  const canTap = () => cfg.interactions && ctx.interactive;
   const fctx = {
     language: cfg.language,
     hideCommands: cfg.hideCommands,
@@ -155,7 +187,10 @@ export function createRouter(ctx: AppContext): {
     if (dir) {
       const resolved = resolvePath(dir);
       const sid = dataSessionID(envelope.data) ?? formSessionID(envelope.data);
-      if (sid) ctx.sessionDirs.set(sid, resolved);
+      if (sid) {
+        ctx.sessionDirs.set(sid, resolved);
+        trimMap(ctx.sessionDirs);
+      }
       return resolved === ctx.root;
     }
     const sid = dataSessionID(envelope.data) ?? formSessionID(envelope.data);
@@ -167,7 +202,9 @@ export function createRouter(ctx: AppContext): {
   function formSessionID(data: unknown): string | undefined {
     if (!data || typeof data !== "object") return undefined;
     const form = (data as { form?: { sessionID?: unknown } }).form?.sessionID;
-    return typeof form === "string" ? form : (data as { sessionID?: unknown }).sessionID as string | undefined;
+    return typeof form === "string"
+      ? form
+      : ((data as { sessionID?: unknown }).sessionID as string | undefined);
   }
 
   function markSeen(id: string): boolean {
@@ -191,15 +228,26 @@ export function createRouter(ctx: AppContext): {
     if (ctx.silenced || !cfg.events.permission) return;
     const req = data as PermissionAskedData;
     if (!req || typeof req.id !== "string") return;
-    const body = fmt.formatPermission(req, fctx);
-    const buttons = cfg.interactions ? permissionButtons(cfg.language) : undefined;
+    if (ctx.permMsgs.has(req.id)) return;
+    // Register before the network call so a fast reply/restart cannot race a
+    // duplicate notification; -1 means "send in flight / not tap-answerable".
+    ctx.permMsgs.set(req.id, -1);
+    const buttons = canTap() ? permissionButtons(cfg.language) : undefined;
+    const body = fmt.formatPermission(req, fctx, buttons ? "buttons" : "plain");
     try {
       const messageId = await ctx.telegram.sendMessage(body, { buttons });
-      if (messageId !== undefined) {
-        ctx.pending.set(messageId, { sessionID: req.sessionID, requestID: req.id, action: req.action });
-        ctx.permMsgs.set(req.id, messageId);
+      ctx.permMsgs.set(req.id, messageId ?? -1);
+      if (messageId !== undefined && buttons) {
+        ctx.pending.set(messageId, {
+          sessionID: req.sessionID,
+          requestID: req.id,
+          action: req.action,
+        });
+        trimMap(ctx.pending);
       }
+      trimMap(ctx.permMsgs);
     } catch (error) {
+      ctx.permMsgs.delete(req.id); // allow a later retry after a send failure
       ctx.logError(`permission notify failed: ${String(error)}`);
     }
   }
@@ -210,12 +258,15 @@ export function createRouter(ctx: AppContext): {
     const messageId = ctx.permMsgs.get(reply.requestID);
     if (messageId === undefined) return;
     ctx.permMsgs.delete(reply.requestID);
+    if (messageId < 0) return;
     ctx.pending.delete(messageId);
     try {
       const text =
         reply.reply === "reject"
           ? DONE_REJECTED[cfg.language]
-          : tr(cfg.language, DONE_ALLOWED, { decision: decisionLabel(cfg.language, reply.reply) });
+          : tr(cfg.language, DONE_ALLOWED, {
+              decision: decisionLabel(cfg.language, reply.reply ?? "once"),
+            });
       await ctx.telegram.editMessageText(messageId, fmt.escapeHtml(text));
     } catch (error) {
       ctx.logError(`permission close edit failed: ${String(error)}`);
@@ -227,17 +278,23 @@ export function createRouter(ctx: AppContext): {
    * one field with 2..5 options. Everything else stays notify-only; the
    * message then points back to the terminal (formatQuestion plain mode).
    */
-  function singleQuestionChoices(form: FormCreatedData["form"]): string[] | undefined {
+  function singleQuestionChoices(
+    form: FormCreatedData["form"]
+  ): { fieldKey: string; choices: FormChoice[] } | undefined {
     const fields = form.fields ?? [];
     if (fields.length !== 1) return undefined;
-    const options = fields[0]?.options ?? [];
-    if (options.length < 2 || options.length > 5) return undefined;
-    return options.map((o) => o.label ?? o.value);
+    const field = fields[0];
+    const options = field?.options ?? [];
+    if (!field || options.length < 2 || options.length > 5) return undefined;
+    return {
+      fieldKey: field.key,
+      choices: options.map((o) => ({ value: o.value, label: o.label || o.value })),
+    };
   }
 
-  function questionButtons(choices: string[]): InlineButton[][] {
-    const rows: InlineButton[][] = choices.map((label, i) => [
-      { text: label.slice(0, 60), callback_data: `q:${i}` },
+  function questionButtons(choices: FormChoice[]): InlineButton[][] {
+    const rows: InlineButton[][] = choices.map((choice, i) => [
+      { text: choice.label.slice(0, 60), callback_data: `q:${i}` },
     ]);
     rows.push([{ text: QUESTION_SKIP[cfg.language], callback_data: "qskip" }]);
     return rows;
@@ -252,21 +309,24 @@ export function createRouter(ctx: AppContext): {
     // Register synchronously so a live form.created racing the recovery
     // startup window cannot duplicate the notification either.
     ctx.formMsgs.set(form.id, -1);
-    const choices = singleQuestionChoices(form);
-    const buttons = cfg.interactions && choices ? questionButtons(choices) : undefined;
+    const question = singleQuestionChoices(form);
+    const buttons = canTap() && question ? questionButtons(question.choices) : undefined;
     try {
       const messageId = await ctx.telegram.sendMessage(
-        fmt.formatQuestion(created, fctx, choices && buttons ? "buttons" : "plain"),
+        fmt.formatQuestion(created, fctx, buttons ? "buttons" : "plain"),
         buttons ? { buttons } : {}
       );
       ctx.formMsgs.set(form.id, messageId ?? -1);
-      if (choices && buttons && messageId !== undefined) {
+      if (question && buttons && messageId !== undefined) {
         ctx.pendingForms.set(messageId, {
           formID: form.id,
           sessionID: form.sessionID,
-          options: choices,
+          fieldKey: question.fieldKey,
+          options: question.choices,
         });
+        trimMap(ctx.pendingForms);
       }
+      trimMap(ctx.formMsgs);
     } catch (error) {
       ctx.formMsgs.delete(form.id); // allow a later retry after a send failure
       ctx.logError(`question notify failed: ${String(error)}`);
@@ -286,11 +346,8 @@ export function createRouter(ctx: AppContext): {
     ctx.formMsgs.delete(id);
     ctx.pendingForms.delete(messageId);
     try {
-      const label = cancelled ? "⏹️" : "✅";
-      await ctx.telegram.editMessageText(
-        messageId,
-        `${label} <i>${fmt.escapeHtml(cancelled ? "cancelled" : "answered")}</i>`
-      );
+      const text = cancelled ? DONE_CANCELLED[cfg.language] : DONE_ANSWERED[cfg.language];
+      await ctx.telegram.editMessageText(messageId, `<b>${fmt.escapeHtml(text)}</b>`);
     } catch (error) {
       ctx.logError(`question close edit failed: ${String(error)}`);
     }
@@ -302,11 +359,14 @@ export function createRouter(ctx: AppContext): {
     cancelIdle(sessionID);
     const t = setTimeout(async () => {
       state.idleTimers.delete(sessionID);
+      // Settings can change while the timer is pending (/stop).
+      if (ctx.silenced || !cfg.events.idle) return;
       // Interactive sessions pause often; at most one completion notification
       // per idleCooldownMs, so conversational pauses do not spam the chat.
       const last = state.idleSentAt.get(sessionID) ?? 0;
       if (Date.now() - last < cfg.idleCooldownMs) return;
       state.idleSentAt.set(sessionID, Date.now());
+      trimMap(state.idleSentAt);
       const title = (await sessionTitle(ctx, sessionID)) ?? ctx.project;
       void ctx.telegram
         .sendMessage(fmt.formatCompleted(sessionID, title, fctx))
@@ -334,15 +394,41 @@ export function createRouter(ctx: AppContext): {
         case "session.created": {
           const d = data as SessionCreatedData;
           if (d?.sessionID) {
-            if (d.parentID) state.children.add(d.sessionID);
+            if (d.parentID) {
+              state.children.add(d.sessionID);
+              trimSet(state.children);
+            }
             const title = d.title ?? d.slug;
-            if (title) ctx.sessionTitles.set(d.sessionID, title);
+            if (title) {
+              ctx.sessionTitles.set(d.sessionID, title);
+              trimMap(ctx.sessionTitles);
+            }
           }
           return;
         }
         case "session.renamed": {
           const d = data as { sessionID: string; title?: string };
-          if (d?.sessionID && d.title) ctx.sessionTitles.set(d.sessionID, d.title);
+          if (d?.sessionID && d.title) {
+            ctx.sessionTitles.set(d.sessionID, d.title);
+            trimMap(ctx.sessionTitles);
+          }
+          return;
+        }
+        case "session.deleted": {
+          const d = data as SessionDeletedData;
+          const sid = typeof d?.sessionID === "string" ? d.sessionID : undefined;
+          if (!sid) return;
+          cancelIdle(sid);
+          state.children.delete(sid);
+          state.idleSentAt.delete(sid);
+          ctx.sessionTitles.delete(sid);
+          ctx.sessionDirs.delete(sid);
+          for (const [messageId, pending] of ctx.pending) {
+            if (pending.sessionID === sid) ctx.pending.delete(messageId);
+          }
+          for (const [messageId, pending] of ctx.pendingForms) {
+            if (pending.sessionID === sid) ctx.pendingForms.delete(messageId);
+          }
           return;
         }
         case "permission.asked":
@@ -393,17 +479,18 @@ export function createRouter(ctx: AppContext): {
 
   /** Restore tap-buttons for questions that were pending before a restart. */
   async function recoverPendingQuestions(): Promise<void> {
-    if (ctx.silenced || !cfg.events.question) return;
+    if (ctx.silenced || !cfg.events.question || !ctx.interactive) return;
     try {
       for (const raw of await listPendingQuestions(ctx)) {
         const data = toFormCreatedData(raw);
-        if (data) void notifyQuestion(data);
+        if (data) await notifyQuestion(data);
       }
     } catch (error) {
       ctx.logError(`question recovery failed: ${String(error)}`);
     }
   }
-  void recoverPendingQuestions();
 
-  return { handle, dispose };
+  if (options.autoRecover !== false) void recoverPendingQuestions();
+
+  return { handle, dispose, recover: recoverPendingQuestions };
 }

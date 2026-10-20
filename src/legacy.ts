@@ -35,7 +35,6 @@
  *   - v1 has no `form.*` question flow, so questions are simply not available.
  */
 
-import { resolve as resolvePath } from "node:path";
 import { createApp } from "./app.ts";
 import type { PermissionDecision, V2Client, V2EventEnvelope } from "./types.ts";
 
@@ -58,7 +57,11 @@ interface V1SdkClient {
 
 /** Optional modern variant: `permission.reply({requestID, reply, message})`. */
 interface V1SdkPermissionReply {
-  reply(input: { requestID: string; reply: PermissionDecision; message?: string }): Promise<unknown>;
+  reply(input: {
+    requestID: string;
+    reply: PermissionDecision;
+    message?: string;
+  }): Promise<unknown>;
 }
 
 /** Pre-rework permission event payload. */
@@ -116,7 +119,8 @@ function metadataResources(metadata: { [key: string]: unknown } | undefined): st
     if (typeof value === "string" && value.trim() !== "") out.push(value.trim());
     else if (typeof value === "number") out.push(String(value));
     else if (Array.isArray(value)) {
-      for (const item of value) if (typeof item === "string" && item.trim() !== "") out.push(item.trim());
+      for (const item of value)
+        if (typeof item === "string" && item.trim() !== "") out.push(item.trim());
     }
   }
   return out;
@@ -251,11 +255,15 @@ export function createV1EventMapper(
 
       case "session.deleted": {
         const session = (props as { info?: V1Session })?.info;
-        if (session && typeof session.id === "string") {
-          titles.delete(session.id);
-          knownParents.delete(session.id);
-        }
-        return undefined;
+        if (!session || typeof session.id !== "string") return undefined;
+        titles.delete(session.id);
+        knownParents.delete(session.id);
+        return {
+          id: `v1:session.deleted:${session.id}:${++occurrence}`,
+          type: "session.deleted",
+          location,
+          data: { sessionID: session.id, parentID: session.parentID },
+        };
       }
 
       case "session.status": {
@@ -312,21 +320,31 @@ export function createV1EventMapper(
 function createEventChannel(): {
   iterable: AsyncIterable<V2EventEnvelope>;
   push(envelope: V2EventEnvelope): void;
+  close(): void;
 } {
   // Bounded so a deferred-load failure (config error, v1 hosts have no
   // dispose chain) can never grow the queue without a consumer.
   const MAX_QUEUED = 250;
   const queue: V2EventEnvelope[] = [];
+  let closed = false;
   let woken: (() => void) | undefined;
+  const wake = (): void => {
+    const resolve = woken;
+    woken = undefined;
+    resolve?.();
+  };
   const push = (envelope: V2EventEnvelope): void => {
+    if (closed) return;
     if (queue.length >= MAX_QUEUED) queue.shift();
     queue.push(envelope);
-    const wake = woken;
-    woken = undefined;
-    wake?.();
+    wake();
+  };
+  const close = (): void => {
+    closed = true;
+    wake();
   };
   const iterable = (async function* (): AsyncIterable<V2EventEnvelope> {
-    for (;;) {
+    while (!closed) {
       const envelope = queue.shift();
       if (envelope) {
         yield envelope;
@@ -337,7 +355,7 @@ function createEventChannel(): {
       });
     }
   })();
-  return { iterable, push };
+  return { iterable, push, close };
 }
 
 /**
@@ -356,7 +374,7 @@ export function createV1Core(
       : typeof input?.worktree === "string" && input.worktree !== ""
         ? input.worktree
         : undefined;
-  const sdk = input?.client as V1SdkClient & { permission?: V1SdkPermissionReply } | undefined;
+  const sdk = input?.client as (V1SdkClient & { permission?: V1SdkPermissionReply }) | undefined;
   if (!directory || !sdk) return undefined;
   const legacyReply =
     typeof sdk.postSessionIdPermissionsPermissionId === "function"
@@ -369,28 +387,42 @@ export function createV1Core(
       : undefined;
   const modernReply =
     sdk.permission && typeof sdk.permission.reply === "function"
-      ? (decision: PermissionDecision, requestID: string) => sdk.permission!.reply({ requestID, reply: decision })
+      ? (decision: PermissionDecision, requestID: string) =>
+          sdk.permission?.reply({ requestID, reply: decision }) ?? Promise.resolve()
       : undefined;
   if (!legacyReply && !modernReply) return undefined;
 
   const mapEvent = createV1EventMapper(directory);
-  const { iterable, push } = createEventChannel();
+  const { iterable, push, close } = createEventChannel();
 
   const client: V2Client = {
     // v1 has no per-plugin options: configuration is environment-driven
     // (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TELEGRAM_LANGUAGE).
     options: {},
     location: { directory },
+    permissionReplyField: "reply",
     event: {
-      subscribe() {
+      subscribe(options?: { signal?: AbortSignal } | AbortSignal) {
+        const signal = options instanceof AbortSignal ? options : options?.signal;
+        if (signal?.aborted) close();
+        else signal?.addEventListener("abort", close, { once: true });
         return iterable;
       },
     },
     permission: {
-      async reply({ sessionID, requestID, decision }) {
+      async reply(input) {
+        if (!("decision" in input)) {
+          // Legacy v1 surfaces only understand the `reply` key.
+          if (modernReply) {
+            await modernReply(input.reply, input.requestID);
+            return;
+          }
+          throw new Error("legacy permission.reply called without a decision");
+        }
+        const decision = input.decision;
         if (legacyReply) {
           try {
-            await legacyReply(decision, sessionID, requestID);
+            await legacyReply(decision, input.sessionID, input.requestID);
             return;
           } catch (error) {
             if (!modernReply) throw error;
@@ -400,16 +432,9 @@ export function createV1Core(
           }
         }
         if (modernReply) {
-          await modernReply(decision, requestID);
+          await modernReply(decision, input.requestID);
           return;
         }
-      },
-      async list() {
-        // v1 diagnostics degrade to "nothing pending in memory".
-        return [];
-      },
-      async get(): Promise<never> {
-        throw new Error("permission.get is not available on v1");
       },
     },
   };

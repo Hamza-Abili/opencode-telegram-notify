@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { TelegramClient, TelegramError, redactToken } from "../src/telegram.ts";
+import { redactToken, TelegramClient, TelegramError } from "../src/telegram.ts";
 
 const TOKEN = "1111111111:AAABBBsecretTOKEN/chat";
 const CHAT = "123";
@@ -15,10 +15,13 @@ function fakeFetch(responder: (url: string, body: Record<string, unknown>) => un
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     captured.push({ url, body });
     const out = responder(url.split("/").pop() ?? "", body);
-    const res = out instanceof Response ? out : new Response(JSON.stringify(out), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    const res =
+      out instanceof Response
+        ? out
+        : new Response(JSON.stringify(out), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
     return res;
   };
   return { impl, captured };
@@ -28,7 +31,9 @@ describe("TelegramClient", () => {
   test("sendMessage queue returns message id", async () => {
     const { impl, captured } = fakeFetch(() => ({ ok: true, result: { message_id: 42 } }));
     const client = new TelegramClient({ token: TOKEN, chatId: CHAT, fetchImpl: impl });
-    const id = await client.sendMessage("hello", { buttons: [[{ text: "B", callback_data: "x" }]] });
+    const id = await client.sendMessage("hello", {
+      buttons: [[{ text: "B", callback_data: "x" }]],
+    });
     expect(id).toBe(42);
     expect(captured[0].url).toContain(`/bot${TOKEN}/sendMessage`);
     expect(captured[0].body.chat_id).toBe(CHAT);
@@ -38,10 +43,13 @@ describe("TelegramClient", () => {
   });
 
   test("client errors are terminal and token is redacted", async () => {
-    const { impl } = fakeFetch(() => new Response(
-      JSON.stringify({ ok: false, description: `whoa ${TOKEN} broken` }),
-      { status: 400, headers: { "content-type": "application/json" } }
-    ));
+    const { impl } = fakeFetch(
+      () =>
+        new Response(JSON.stringify({ ok: false, description: `whoa ${TOKEN} broken` }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        })
+    );
     const client = new TelegramClient({ token: TOKEN, chatId: CHAT, fetchImpl: impl });
     let error: unknown;
     try {

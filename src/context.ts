@@ -5,8 +5,14 @@
 
 import fs from "node:fs";
 import type { AppConfig } from "./config.ts";
-import { TelegramClient, TelegramError, redactToken } from "./telegram.ts";
-import type { PermissionDecision, V2Client, V2PermissionRequest } from "./types.ts";
+import { redactToken, type TelegramClient } from "./telegram.ts";
+import type {
+  FormAnswer,
+  LooseQuestion,
+  PermissionDecision,
+  PermissionReplyField,
+  V2Client,
+} from "./types.ts";
 
 export interface PendingPermission {
   sessionID: string;
@@ -14,11 +20,18 @@ export interface PendingPermission {
   action: string;
 }
 
+/** One answer choice of a single-select question. */
+export interface FormChoice {
+  value: string;
+  label: string;
+}
+
 /** A pending single-select question rendered as tap buttons. */
 export interface PendingForm {
   formID: string;
   sessionID: string;
-  options: string[];
+  fieldKey: string;
+  options: FormChoice[];
 }
 
 export interface AppContext {
@@ -43,6 +56,14 @@ export interface AppContext {
   formMsgs: Map<string, number>;
   /** True after /stop in the bound chat; re-enabled by /start. */
   silenced: boolean;
+  /**
+   * Whether this activation currently owns the Telegram poller. Only the
+   * owner can receive button callbacks, so other instances send plain
+   * notifications instead of dead buttons.
+   */
+  interactive: boolean;
+  /** Cached permission reply shape that this host accepted. */
+  permissionReplyField?: PermissionReplyField;
   log(message: string): void;
   logError(message: string): void;
 }
@@ -70,9 +91,11 @@ export function createLogger(
 }
 
 /**
- * Reply to a pending permission using the v2 client. The documented surface
- * uses `decision`; early builds accepted `reply` — both are attempted and
- * the fallback is logged (not silent).
+ * Reply to a pending permission using the v2 client.
+ *
+ * opencode 2.0.32 uses `decision`; early v2 builds and the v1 adapter use
+ * `reply`. The first successful shape is cached, so the fallback is probed at
+ * most once per activation instead of on every tap.
  */
 export async function replyPermission(
   ctx: AppContext,
@@ -83,86 +106,106 @@ export async function replyPermission(
 ): Promise<void> {
   const perm = ctx.client.permission;
   if (!perm) throw new Error("permission client not available");
-  try {
-    await perm.reply({ sessionID, requestID, decision, message });
-    return;
-  } catch (decisionError) {
+
+  const preferred = ctx.permissionReplyField ?? ctx.client.permissionReplyField;
+  const order: PermissionReplyField[] =
+    preferred === "reply" ? ["reply", "decision"] : ["decision", "reply"];
+
+  let firstError: unknown;
+  for (const field of order) {
     try {
-      await perm.reply({ sessionID, requestID, reply: decision, message } as never);
-      ctx.log("permission.reply fallback via `reply` field succeeded");
+      if (field === "decision") {
+        await perm.reply({ sessionID, requestID, decision, message });
+      } else {
+        await perm.reply({ sessionID, requestID, reply: decision, message });
+      }
+      if (ctx.permissionReplyField !== field) {
+        ctx.permissionReplyField = field;
+        if (field === "reply") ctx.log("permission.reply uses the legacy `reply` field");
+      }
       return;
-    } catch (replyError) {
-      throw decisionError instanceof Error ? decisionError : replyError;
+    } catch (error) {
+      firstError ??= error;
     }
   }
+  throw firstError instanceof Error ? firstError : new Error(String(firstError));
 }
 
-/** List pending permission requests for a session (diagnostics). */
-export async function listPermissions(
-  ctx: AppContext,
-  sessionID: string
-): Promise<V2PermissionRequest[]> {
-  const perm = ctx.client.permission;
-  if (!perm) return [];
-  try {
-    return await perm.list({ sessionID });
-  } catch (error) {
-    ctx.logError(`permission.list failed: ${String(error)}`);
-    return [];
-  }
-}
-
-/** Loose typing for the session-scoped question fallback of the v2 SDK. */
-interface LooseQuestion {
-  reply?: (input: {
-    requestID: string;
-    answers?: string[][];
-    sessionID?: string;
-    questionV2Reply?: { answers: string[][] };
-  }) => Promise<unknown>;
-  reject?: (input: { requestID: string }) => Promise<unknown>;
-  list?: (input: { directory: string }) => Promise<unknown>;
+/** True when an error means the permission/form was already settled. */
+export function isSettledError(error: unknown): boolean {
+  const err = error as { code?: unknown; status?: unknown; message?: unknown } | undefined;
+  const code = Number(err?.code ?? err?.status);
+  if (code === 404 || code === 409 || code === 410) return true;
+  const message = String(err?.message ?? error).toLowerCase();
+  return /already (answered|replied|resolved|settled)|not found|no pending|does not exist|unknown (request|permission|form)|settled|expired/.test(
+    message
+  );
 }
 
 function questionSurface(ctx: AppContext, scoped?: boolean): LooseQuestion | undefined {
-  if (scoped) {
-    const session = (ctx.client as unknown as { session?: { question?: LooseQuestion } }).session;
-    return session?.question;
-  }
+  if (scoped) return ctx.client.session?.question;
   return ctx.client.question;
 }
 
+async function replyWithQuestionSurface(
+  ctx: AppContext,
+  formID: string,
+  sessionID: string,
+  choice: FormChoice
+): Promise<void> {
+  // Legacy surfaces expect answer labels; the official form surface below
+  // receives machine values.
+  const answers = [[choice.label]];
+  const surface = questionSurface(ctx);
+  if (surface?.reply) {
+    await surface.reply({ requestID: formID, answers });
+    return;
+  }
+  const scoped = questionSurface(ctx, true);
+  if (scoped?.reply) {
+    await scoped.reply({
+      requestID: formID,
+      sessionID,
+      questionV2Reply: { answers },
+    });
+    ctx.log("question reply via session-scoped surface succeeded");
+    return;
+  }
+  throw new Error("question reply surface not available");
+}
+
 /**
- * Answer a pending question (form) from a Telegram tap. Mirrors the
- * permission dual-surface strategy: the global `question.reply` ships first,
- * the session-scoped `session.question.reply` is the fallback. `null` labels
- * means "skip" and uses `question.reject`; a missing surface throws.
+ * Answer a pending question (form) from a Telegram tap.
+ *
+ * Preference order: official `session.form.reply` with the field key and
+ * machine value, then the legacy global/scoped `question.reply` with labels.
+ * `null` means "skip" and uses `question.reject`. A missing surface throws.
  */
 export async function replyQuestion(
   ctx: AppContext,
   formID: string,
   sessionID: string,
-  labels: string[] | null
+  fieldKey: string,
+  choice: FormChoice | null
 ): Promise<void> {
-  if (labels === null) {
-    const reject = questionSurface(ctx)?.reject;
-    if (!reject) throw new Error("question reject surface not available");
-    await reject({ requestID: formID });
+  if (choice === null) {
+    const surface = questionSurface(ctx) ?? questionSurface(ctx, true);
+    if (!surface?.reject) throw new Error("question reject surface not available");
+    await surface.reject({ requestID: formID, sessionID });
     return;
   }
-  const answer = labels.length === 0 ? undefined : [labels];
-  const surface = questionSurface(ctx);
-  if (surface?.reply) {
-    await surface.reply({ requestID: formID, answers: answer ?? [] });
-    return;
+
+  const form = ctx.client.session?.form;
+  if (form?.reply) {
+    const answer: FormAnswer = { [fieldKey]: [choice.value] };
+    try {
+      await form.reply({ sessionID, formID, answer });
+      return;
+    } catch (error) {
+      ctx.log(`session.form.reply failed, trying question.reply: ${String(error)}`);
+    }
   }
-  const scoped = questionSurface(ctx, true);
-  if (scoped?.reply) {
-    await scoped.reply({ requestID: formID, sessionID, questionV2Reply: { answers: answer ?? [] } });
-    ctx.log("question reply via session-scoped surface succeeded");
-    return;
-  }
-  throw new Error("question reply surface not available");
+  await replyWithQuestionSurface(ctx, formID, sessionID, choice);
 }
 
 /**
@@ -171,7 +214,10 @@ export async function replyQuestion(
  * surface or lookup succeeds; callers fall back to the project name so the
  * message never shows "(no details)" for completions.
  */
-export async function sessionTitle(ctx: AppContext, sessionID: string): Promise<string | undefined> {
+export async function sessionTitle(
+  ctx: AppContext,
+  sessionID: string
+): Promise<string | undefined> {
   const cached = ctx.sessionTitles.get(sessionID);
   if (cached) return cached;
   const get = ctx.client.session?.get;
@@ -187,13 +233,18 @@ export async function sessionTitle(ctx: AppContext, sessionID: string): Promise<
   }
 }
 
-/** List pending questions for the plugin root, or an empty array when unavailable. */export async function listPendingQuestions(ctx: AppContext): Promise<unknown[]> {
+/** List pending questions for the plugin root, or an empty array when unavailable. */
+export async function listPendingQuestions(ctx: AppContext): Promise<unknown[]> {
   const list = questionSurface(ctx)?.list;
   if (!list) return [];
   try {
     const result = await list({ directory: ctx.root });
     if (Array.isArray(result)) return result;
-    if (result && typeof result === "object" && Array.isArray((result as { items?: unknown[] }).items)) {
+    if (
+      result &&
+      typeof result === "object" &&
+      Array.isArray((result as { items?: unknown[] }).items)
+    ) {
       return (result as { items: unknown[] }).items;
     }
     return [];
@@ -202,5 +253,3 @@ export async function sessionTitle(ctx: AppContext, sessionID: string): Promise<
     return [];
   }
 }
-
-export { TelegramError };

@@ -40,12 +40,20 @@ describe("loadConfig", () => {
   });
 
   test("malformed token fails", () => {
-    expect(() => loadConfig({ telegram: { botToken: "nocolon", chatId: "1" } }, {})).toThrow(ConfigError);
+    expect(() => loadConfig({ telegram: { botToken: "nocolon", chatId: "1" } }, {})).toThrow(
+      ConfigError
+    );
   });
 
   test("allowedUserIds accepts list or comma string", () => {
-    const a = loadConfig({ ...base, telegram: { ...base.telegram, allowedUserIds: ["1", "2"] } }, { T: "1:x", C: "1" });
-    const b = loadConfig({ ...base, telegram: { ...base.telegram, allowedUserIds: "3,4" } }, { T: "1:x", C: "1" });
+    const a = loadConfig(
+      { ...base, telegram: { ...base.telegram, allowedUserIds: ["1", "2"] } },
+      { T: "1:x", C: "1" }
+    );
+    const b = loadConfig(
+      { ...base, telegram: { ...base.telegram, allowedUserIds: "3,4" } },
+      { T: "1:x", C: "1" }
+    );
     expect(a.telegram.allowedUserIds).toEqual(["1", "2"]);
     expect(b.telegram.allowedUserIds).toEqual(["3", "4"]);
   });
@@ -60,17 +68,32 @@ describe("loadConfig", () => {
   test("numeric clamps stay within range", () => {
     const cfg = loadConfig({ ...base, idleDebounceMs: 9_999_999 }, { T: "1:x", C: "1" });
     expect(cfg.idleDebounceMs).toBe(600_000);
-    const clamped = loadConfig(
-      { ...base, idleCooldownMs: 5_000_000 },
-      { T: "1:x", C: "1" }
-    );
+    const clamped = loadConfig({ ...base, idleCooldownMs: 5_000_000 }, { T: "1:x", C: "1" });
     expect(clamped.idleCooldownMs).toBe(3_600_000);
     const neutral = loadConfig({ ...base, idleCooldownMs: -1 }, { T: "1:x", C: "1" });
     expect(neutral.idleCooldownMs).toBe(0);
   });
 
+  test("numeric parsing rejects partial strings instead of silently parsing a prefix", () => {
+    const cfg = loadConfig({ ...base, idleDebounceMs: "15s" }, { T: "1:x", C: "1" });
+    expect(cfg.idleDebounceMs).toBe(60_000);
+    const stringy = loadConfig({ ...base, idleDebounceMs: "1500" }, { T: "1:x", C: "1" });
+    expect(stringy.idleDebounceMs).toBe(1500);
+  });
+
+  test("empty expanded allowlist entries are discarded", () => {
+    const cfg = loadConfig(
+      { ...base, telegram: { ...base.telegram, allowedUserIds: ["${MISSING}", " 7 "] } },
+      { T: "1:x", C: "1" }
+    );
+    expect(cfg.telegram.allowedUserIds).toEqual(["7"]);
+  });
+
   test("events flags parse booleans", () => {
-    const cfg = loadConfig({ ...base, events: { permission: "false", idle: true } }, { T: "1:x", C: "1" });
+    const cfg = loadConfig(
+      { ...base, events: { permission: "false", idle: true } },
+      { T: "1:x", C: "1" }
+    );
     expect(cfg.events.permission).toBe(false);
     expect(cfg.events.idle).toBe(true);
     expect(cfg.events.question).toBe(true);

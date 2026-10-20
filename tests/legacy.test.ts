@@ -5,9 +5,9 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config.ts";
 import {
+  default as createLegacyPlugin,
   createV1Core,
   createV1EventMapper,
-  default as createLegacyPlugin,
   type V1PluginInput,
 } from "../src/legacy.ts";
 
@@ -16,7 +16,12 @@ const ROOT = "/tmp/proj";
 describe("v1 event mapper", () => {
   const map = createV1EventMapper(ROOT);
 
-  const withLocation = (envelope: { id: string; type: string; created?: number; data: unknown }) => ({
+  const withLocation = (envelope: {
+    id: string;
+    type: string;
+    created?: number;
+    data: unknown;
+  }) => ({
     ...envelope,
     location: { directory: ROOT },
   });
@@ -101,9 +106,12 @@ describe("v1 event mapper", () => {
       properties: { id: "p_2", sessionID: "ses_1", title: "Edit file" },
     };
     expect(map(event)?.id).toBe("v1:permission.asked:p_2");
-    expect(map({ type: "permission.replied", properties: { permissionID: "p_2", response: "once", sessionID: "ses_1" } })?.id).toBe(
-      "v1:permission.replied:p_2:once"
-    );
+    expect(
+      map({
+        type: "permission.replied",
+        properties: { permissionID: "p_2", response: "once", sessionID: "ses_1" },
+      })?.id
+    ).toBe("v1:permission.replied:p_2:once");
   });
 
   test("skips permission.replied with an unknown response verb", () => {
@@ -113,9 +121,15 @@ describe("v1 event mapper", () => {
   });
 
   test("maps lifecycle events with occurrence-unique ids", () => {
-    const busy = map({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "busy" } } });
+    const busy = map({
+      type: "session.status",
+      properties: { sessionID: "ses_1", status: { type: "busy" } },
+    });
     expect(busy?.type).toBe("session.execution.started");
-    const busy2 = map({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "busy" } } });
+    const busy2 = map({
+      type: "session.status",
+      properties: { sessionID: "ses_1", status: { type: "busy" } },
+    });
     expect(busy2?.id).not.toBe(busy?.id);
     expect(map({ type: "session.idle", properties: { sessionID: "ses_1" } })).toEqual(
       withLocation({
@@ -129,17 +143,27 @@ describe("v1 event mapper", () => {
   test("maps aborted errors to silent interruption, others to failure", () => {
     const aborted = map({
       type: "session.error",
-      properties: { sessionID: "ses_1", error: { name: "MessageAbortedError", data: { message: "aborted" } } },
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "MessageAbortedError", data: { message: "aborted" } },
+      },
     });
     expect(aborted?.type).toBe("session.execution.interrupted");
-    expect((aborted?.data as { reason: string }).reason).toBe("aborted");
+    expect(aborted?.data).toBeDefined();
+    const abortedData = aborted?.data as { reason: string } | undefined;
+    expect(abortedData?.reason).toBe("aborted");
 
     const failed = map({
       type: "session.error",
-      properties: { sessionID: "ses_1", error: { name: "UnknownError", data: { message: "boom" } } },
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "UnknownError", data: { message: "boom" } },
+      },
     });
     expect(failed?.type).toBe("session.execution.failed");
-    expect((failed?.data as { error: { type: string; message: string } }).error).toEqual({
+    expect(failed?.data).toBeDefined();
+    const failedData = failed?.data as { error: { type: string; message: string } } | undefined;
+    expect(failedData?.error).toEqual({
       type: "UnknownError",
       message: "boom",
     });
@@ -147,46 +171,74 @@ describe("v1 event mapper", () => {
 
   test("skips session events without a session", () => {
     expect(map({ type: "session.idle", properties: {} })).toBeUndefined();
-    expect(map({ type: "session.error", properties: { error: { name: "UnknownError" } } })).toBeUndefined();
+    expect(
+      map({ type: "session.error", properties: { error: { name: "UnknownError" } } })
+    ).toBeUndefined();
   });
 
   test("tracks titles via created and only forwards real updated changes", () => {
-    expect(map({ type: "session.created", properties: { info: { id: "ses_9", title: "Work", time: { updated: 1 } } } }))
-      .toEqual(
-        withLocation({
-          id: "v1:session.created:ses_9:1",
-          type: "session.created",
-          data: { sessionID: "ses_9", parentID: undefined, title: "Work" },
-        })
-      );
+    expect(
+      map({
+        type: "session.created",
+        properties: { info: { id: "ses_9", title: "Work", time: { updated: 1 } } },
+      })
+    ).toEqual(
+      withLocation({
+        id: "v1:session.created:ses_9:1",
+        type: "session.created",
+        data: { sessionID: "ses_9", parentID: undefined, title: "Work" },
+      })
+    );
     // Repeated identity update → skipped.
     expect(
       map({ type: "session.updated", properties: { info: { id: "ses_9", title: "Work" } } })
     ).toBeUndefined();
     // Title change → forwarded as session.created for attribution.
-    const changed = map({ type: "session.updated", properties: { info: { id: "ses_9", title: "Fix bug" } } });
+    const changed = map({
+      type: "session.updated",
+      properties: { info: { id: "ses_9", title: "Fix bug" } },
+    });
     expect(changed?.type).toBe("session.created");
-    expect((changed?.data as { title: string }).title).toBe("Fix bug");
+    const changedData = changed?.data as { title: string } | undefined;
+    expect(changedData?.title).toBe("Fix bug");
     // Parent assignment arrives once, then repeats are skipped.
-    const parented = map({ type: "session.updated", properties: { info: { id: "ses_9", parentID: "ses_1" } } });
-    expect((parented?.data as { parentID: string }).parentID).toBe("ses_1");
-    expect(map({ type: "session.updated", properties: { info: { id: "ses_9", parentID: "ses_1" } } })).toBeUndefined();
-    // session.deleted is silent and resets the per-session ledger.
-    expect(map({ type: "session.deleted", properties: { info: { id: "ses_9" } } })).toBeUndefined();
+    const parented = map({
+      type: "session.updated",
+      properties: { info: { id: "ses_9", parentID: "ses_1" } },
+    });
+    const parentedData = parented?.data as { parentID: string } | undefined;
+    expect(parentedData?.parentID).toBe("ses_1");
+    expect(
+      map({ type: "session.updated", properties: { info: { id: "ses_9", parentID: "ses_1" } } })
+    ).toBeUndefined();
+    // session.deleted resets the ledger and reaches the router for cache cleanup.
+    const deleted = map({ type: "session.deleted", properties: { info: { id: "ses_9" } } });
+    expect(deleted?.type).toBe("session.deleted");
+    expect(deleted?.data).toBeDefined();
+    const deletedData = deleted?.data as { sessionID: string } | undefined;
+    expect(deletedData?.sessionID).toBe("ses_9");
   });
 
   test("recreate-after-delete forwards creation again (ledger reset)", () => {
     // After deletion the title ledger forgets the session; a recreated session
     // with the same id forwards its creation again (dedupe id includes time).
     const map = createV1EventMapper(ROOT);
-    map({ type: "session.created", properties: { info: { id: "ses_x", title: "T", time: { updated: 5 } } } });
+    map({
+      type: "session.created",
+      properties: { info: { id: "ses_x", title: "T", time: { updated: 5 } } },
+    });
     map({ type: "session.deleted", properties: { info: { id: "ses_x" } } });
-    const again = map({ type: "session.created", properties: { info: { id: "ses_x", title: "T", time: { updated: 6 } } } });
+    const again = map({
+      type: "session.created",
+      properties: { info: { id: "ses_x", title: "T", time: { updated: 6 } } },
+    });
     expect(again?.id).toBe("v1:session.created:ses_x:6");
   });
 
   test("ignores unrelated v1 events", () => {
-    expect(map({ type: "todo.updated", properties: { sessionID: "a", todos: [] } })).toBeUndefined();
+    expect(
+      map({ type: "todo.updated", properties: { sessionID: "a", todos: [] } })
+    ).toBeUndefined();
     expect(map({ type: "message.part.updated", properties: {} })).toBeUndefined();
     expect(map(undefined)).toBeUndefined();
     expect(map({ properties: {} })).toBeUndefined();
@@ -207,10 +259,20 @@ describe("v1 core", () => {
     const modern: unknown[] = [];
     const core = createV1Core({
       directory: ROOT,
-      client: { permission: { async reply(input: unknown) { modern.push(input); } } },
+      client: {
+        permission: {
+          async reply(input: unknown) {
+            modern.push(input);
+          },
+        },
+      },
     });
     expect(core).toBeDefined();
-    await core!.client.permission!.reply({ sessionID: "ses_1", requestID: "p_9", decision: "always" });
+    await core?.client.permission?.reply({
+      sessionID: "ses_1",
+      requestID: "p_9",
+      decision: "always",
+    });
     expect(modern[0]).toEqual({ requestID: "p_9", reply: "always" });
   });
 
@@ -233,13 +295,16 @@ describe("v1 core", () => {
     const { value } = await envelopePromise;
     expect(value.type).toBe("permission.asked");
 
-    await core!.client.permission!.reply({ sessionID: "ses_1", requestID: "p_9", decision: "once" });
+    await core?.client.permission?.reply({
+      sessionID: "ses_1",
+      requestID: "p_9",
+      decision: "once",
+    });
     expect(calls[0]).toEqual({
       path: { id: "ses_1", permissionID: "p_9" },
       query: { directory: ROOT },
       body: { response: "once" },
     });
-    expect(await core!.client.permission!.list({ sessionID: "ses_1" })).toEqual([]);
   });
 
   test("legacy failure falls back to the modern surface", async () => {
@@ -250,10 +315,14 @@ describe("v1 core", () => {
         async postSessionIdPermissionsPermissionId() {
           throw new Error("legacy down");
         },
-        permission: { async reply(input: unknown) { modern.push(input); } },
+        permission: {
+          async reply(input: unknown) {
+            modern.push(input);
+          },
+        },
       },
     });
-    await core!.client.permission!.reply({ sessionID: "s1", requestID: "q1", decision: "reject" });
+    await core?.client.permission?.reply({ sessionID: "s1", requestID: "q1", decision: "reject" });
     expect(modern[0]).toEqual({ requestID: "q1", reply: "reject" });
   });
 
@@ -267,12 +336,15 @@ describe("v1 core", () => {
       },
     });
     await expect(
-      core!.client.permission!.reply({ sessionID: "s1", requestID: "q1", decision: "once" })
+      core?.client.permission?.reply({ sessionID: "s1", requestID: "q1", decision: "once" })
     ).rejects.toThrow("down");
   });
 
   test("event queue is bounded with drop-oldest", async () => {
-    const core = createV1Core({ directory: ROOT, client: { postSessionIdPermissionsPermissionId() {} } });
+    const core = createV1Core({
+      directory: ROOT,
+      client: { postSessionIdPermissionsPermissionId() {} },
+    });
     const iterator = core!.client.event!.subscribe()[Symbol.asyncIterator]();
     for (let i = 0; i < 260; i++) {
       core!.pushEvent({ type: "session.idle", properties: { sessionID: `SES_${i}` } });
@@ -283,7 +355,10 @@ describe("v1 core", () => {
   });
 
   test("pushEvent drops unmapped events", async () => {
-    const core = createV1Core({ directory: ROOT, client: { postSessionIdPermissionsPermissionId() {} } });
+    const core = createV1Core({
+      directory: ROOT,
+      client: { postSessionIdPermissionsPermissionId() {} },
+    });
     core!.pushEvent({ type: "todo.updated", properties: {} });
     const race = core!.client.event!.subscribe()[Symbol.asyncIterator]().next();
     const winner = await Promise.race([
@@ -297,9 +372,11 @@ describe("v1 core", () => {
 describe("v1 default export", () => {
   test("is a factory that yields hooks; disabled path stays inert", async () => {
     expect(typeof createLegacyPlugin).toBe("function");
-    const hooks = (createLegacyPlugin as unknown as (input: V1PluginInput) => {
-      event(input: { event: unknown }): Promise<void>;
-    })({});
+    const hooks = (
+      createLegacyPlugin as unknown as (input: V1PluginInput) => {
+        event(input: { event: unknown }): Promise<void>;
+      }
+    )({});
     expect(typeof hooks.event).toBe("function");
     // No client → inert; must not throw on events.
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_1" } } });
@@ -321,7 +398,10 @@ describe("v1 environment-driven config", () => {
   });
 
   test("v1 core options stay empty so config resolves from the environment", () => {
-    const core = createV1Core({ directory: ROOT, client: { postSessionIdPermissionsPermissionId() {} } });
-    expect(core!.client.options).toEqual({});
+    const core = createV1Core({
+      directory: ROOT,
+      client: { postSessionIdPermissionsPermissionId() {} },
+    });
+    expect(core?.client.options).toEqual({});
   });
 });

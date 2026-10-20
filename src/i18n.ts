@@ -24,11 +24,6 @@ export function decisionLabel(lang: Language, decision: PermissionDecision): str
   return lang === "it" ? "una volta" : "once";
 }
 
-export const TITLE = {
-  en: "OpenCode needs you",
-  it: "OpenCode ha bisogno di te",
-} as const;
-
 export const PERMISSION = {
   en: "🔐 Permission request",
   it: "🔐 Richiesta di permesso",
@@ -52,11 +47,6 @@ export const FAILED = {
 export const CANCELLED = {
   en: "⏹ Task cancelled",
   it: "⏹ Task annullato",
-} as const;
-
-export const ERROR = {
-  en: "💥 Session error",
-  it: "💥 Errore di sessione",
 } as const;
 
 export const PROJECT = {
@@ -109,6 +99,11 @@ export const DONE_REJECTED = {
   it: "🚫 Rifiutato",
 } as const;
 
+export const DONE_CANCELLED = {
+  en: "⏹ Cancelled",
+  it: "⏹ Annullato",
+} as const;
+
 export const ANSWERED_IN_TERMINAL = {
   en: "Already answered (terminal)",
   it: "Già risposto (terminale)",
@@ -122,6 +117,16 @@ export const EXPIRED_OR_STALE = {
 export const ANSWER_IN_TERMINAL = {
   en: "⌨️ Answer in your terminal — this question type is not tap-answerable.",
   it: "⌨️ Rispondi nel terminale — questo tipo di domanda non ha bottoni.",
+} as const;
+
+export const PERMISSION_ANSWER_IN_TERMINAL = {
+  en: "⌨️ Answer in your terminal — tap-to-answer is unavailable for this notification.",
+  it: "⌨️ Rispondi nel terminale — la risposta con tap non è disponibile per questa notifica.",
+} as const;
+
+export const REPLY_FAILED_RETRY = {
+  en: "Could not send the reply — tap again or answer in the terminal.",
+  it: "Invio non riuscito — tocca di nuovo o rispondi nel terminale.",
 } as const;
 
 export const ANSWER_WITH_BUTTONS = {
@@ -171,6 +176,56 @@ export const SHUTTING_DONE = {
 export const STATUS_ONLINE = {
   en: "🟢 Plugin running",
   it: "🟢 Plugin attivo",
+} as const;
+
+export const STATUS_INTERACTIVE = {
+  en: "🖲 Tap buttons: active",
+  it: "🖲 Bottoni: attivi",
+} as const;
+
+export const STATUS_STANDBY = {
+  en: "💤 Tap buttons: standby (another instance is polling)",
+  it: "💤 Bottoni: standby (un'altra istanza sta facendo polling)",
+} as const;
+
+export const STATUS_ACTIVE = {
+  en: "🔔 Notifications active",
+  it: "🔔 Notifiche attive",
+} as const;
+
+export const STATUS_SILENCED = {
+  en: "🔕 Silenced (use /start)",
+  it: "🔕 Silenziato (usa /start)",
+} as const;
+
+export const EVENTS_LABEL = {
+  en: "Events",
+  it: "Eventi",
+} as const;
+
+export const COMMAND_START = {
+  en: "Connect + chat id",
+  it: "Connetti + chat id",
+} as const;
+
+export const COMMAND_STATUS = {
+  en: "Plugin status",
+  it: "Stato del plugin",
+} as const;
+
+export const COMMAND_SETUP = {
+  en: "Copy-paste config",
+  it: "Config da copiare",
+} as const;
+
+export const COMMAND_STOP = {
+  en: "Silence until /start",
+  it: "Silenzia fino a /start",
+} as const;
+
+export const COMMAND_HELP = {
+  en: "What this bot does",
+  it: "Cosa fa questo bot",
 } as const;
 
 export const EMPTY = {

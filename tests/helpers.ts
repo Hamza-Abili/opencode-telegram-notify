@@ -2,8 +2,8 @@
  * opencode-telegram-notify — shared test helpers (fake contexts and clients).
  */
 
-import type { AppContext } from "../src/context.ts";
 import type { AppConfig } from "../src/config.ts";
+import type { AppContext } from "../src/context.ts";
 import type { TelegramClient, TelegramUpdate } from "../src/telegram.ts";
 import type { PermissionDecision, V2Client, V2EventEnvelope } from "../src/types.ts";
 
@@ -46,7 +46,6 @@ export function config(overrides: Partial<AppConfig> = {}): AppConfig {
     interactions: true,
     idleDebounceMs: 10,
     idleCooldownMs: 0,
-    dedupTtlMs: 60_000,
     maxMessageChars: 3800,
     hideCommands: false,
     ...overrides,
@@ -66,14 +65,17 @@ export function fakeClient(root = "/tmp/proj"): FakeV2Client {
   const client = {
     location: { directory: root },
     permission: {
-      async reply(input: { sessionID: string; requestID: string; decision: PermissionDecision }) {
-        answered.push(input);
-      },
-      async list() {
-        return [];
-      },
-      async get() {
-        throw new Error("not found");
+      async reply(input: {
+        sessionID: string;
+        requestID: string;
+        decision?: PermissionDecision;
+        reply?: PermissionDecision;
+      }) {
+        answered.push({
+          sessionID: input.sessionID,
+          requestID: input.requestID,
+          decision: input.decision ?? input.reply ?? "once",
+        });
       },
     },
     question: {
@@ -100,7 +102,10 @@ export function fakeClient(root = "/tmp/proj"): FakeV2Client {
   });
 }
 
-export function mkContext(root = "/tmp/proj", overrides: Partial<AppConfig> = {}): {
+export function mkContext(
+  root = "/tmp/proj",
+  overrides: Partial<AppConfig> = {}
+): {
   ctx: AppContext;
   calls: FakeTelegramCalls;
   answered: { sessionID: string; requestID: string; decision: PermissionDecision }[];
@@ -122,6 +127,7 @@ export function mkContext(root = "/tmp/proj", overrides: Partial<AppConfig> = {}
     permMsgs: new Map(),
     formMsgs: new Map(),
     silenced: false,
+    interactive: true,
     log: () => undefined,
     logError: () => undefined,
   };

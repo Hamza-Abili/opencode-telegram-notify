@@ -3,10 +3,11 @@
  *
  * Telegram's getUpdates allows exactly one consumer per bot token. When an
  * opencode instance already holds it, other instances stand by. The lock is
- * a small JSON file carrying {pid, at}; ownership is proven by a live pid,
- * staleness by an old `at` timestamp.
+ * a small JSON file carrying {pid, at, token}; ownership is proven by a live
+ * pid plus a per-activation token, staleness by an old `at` timestamp.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -34,6 +35,7 @@ export interface LockOptions {
 interface LockBody {
   pid: number;
   at: number;
+  token?: string;
 }
 
 function sameAlive(pid: number): boolean {
@@ -53,8 +55,10 @@ export function openPollerLock(dir: string, options: LockOptions = {}): PollerLo
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => undefined);
   const lockFile = path.join(dir, "poller.lock");
+  const token = randomUUID();
 
   let ownerPid: number | null = null;
+  let ownerToken: string | null = null;
 
   function readBody(): LockBody | null {
     try {
@@ -67,12 +71,28 @@ export function openPollerLock(dir: string, options: LockOptions = {}): PollerLo
     return null;
   }
 
+  function owns(body: LockBody | null): boolean {
+    return (
+      body !== null &&
+      ownerPid === process.pid &&
+      ownerToken !== null &&
+      body.pid === process.pid &&
+      body.token === ownerToken
+    );
+  }
+
+  function clearOwnership(): void {
+    ownerPid = null;
+    ownerToken = null;
+  }
+
   function claim(): boolean {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const body: LockBody = { pid: process.pid, at: now() };
+      const body: LockBody = { pid: process.pid, at: now(), token };
       fs.writeFileSync(lockFile, JSON.stringify(body), { flag: "wx" });
       ownerPid = process.pid;
+      ownerToken = token;
       return true;
     } catch (error) {
       const err = error as { code?: string };
@@ -93,14 +113,36 @@ export function openPollerLock(dir: string, options: LockOptions = {}): PollerLo
       } catch {
         // someone else may have unlinked/rewritten concurrently
       }
+    } else {
+      // A malformed file may be a torn write from a live owner. Wait for its
+      // mtime to age out before reclaiming; otherwise a crash would deadlock
+      // the poller forever.
+      try {
+        const age = now() - fs.statSync(lockFile).mtimeMs;
+        if (age <= staleMs) return;
+      } catch {
+        // missing → safe to claim
+      }
+      try {
+        fs.unlinkSync(lockFile);
+        log("lock: replaced malformed stale lock");
+      } catch {
+        // already gone / racing
+      }
     }
     claim();
+  }
+
+  function writeBody(body: LockBody): void {
+    const tmp = `${lockFile}.${process.pid}.${token}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(body));
+    fs.renameSync(tmp, lockFile);
   }
 
   const lock: PollerLock = {
     file: lockFile,
     get held(): boolean {
-      return ownerPid === process.pid;
+      return ownerPid === process.pid && ownerToken !== null;
     },
     tryAcquire(): boolean {
       if (lock.held) return true;
@@ -110,24 +152,28 @@ export function openPollerLock(dir: string, options: LockOptions = {}): PollerLo
     },
     heartbeat(): void {
       if (!lock.held) return;
+      const body = readBody();
+      if (!owns(body)) {
+        // Another activation stole the lock; stop pretending we own it.
+        clearOwnership();
+        return;
+      }
       try {
-        const body: LockBody = { pid: process.pid, at: now() };
-        // rewrite atomically enough for our purpose
-        fs.writeFileSync(lockFile, JSON.stringify(body));
+        writeBody({ pid: process.pid, at: now(), token });
       } catch {
         // next heartbeat will retry
       }
     },
     release(): void {
       const body = readBody();
-      if (body && body.pid === process.pid) {
+      if (owns(body)) {
         try {
           fs.unlinkSync(lockFile);
         } catch {
           // already gone
         }
       }
-      ownerPid = null;
+      clearOwnership();
     },
   };
   return lock;

@@ -6,8 +6,13 @@ import {
   formatPermission,
   formatQuestion,
   truncate,
+  truncateHtml,
 } from "../src/format.ts";
-import { ANSWER_IN_TERMINAL, ANSWER_WITH_BUTTONS } from "../src/i18n.ts";
+import {
+  ANSWER_IN_TERMINAL,
+  ANSWER_WITH_BUTTONS,
+  PERMISSION_ANSWER_IN_TERMINAL,
+} from "../src/i18n.ts";
 
 const ctx = {
   language: "en" as const,
@@ -23,6 +28,15 @@ describe("escapeHtml / truncate", () => {
   test("truncates with ellipsis", () => {
     expect(truncate("abcdefgh", 5)).toBe("abcd…");
     expect(truncate("ab", 5)).toBe("ab");
+  });
+
+  test("truncateHtml never cuts a tag or entity and closes open tags", () => {
+    const value = `<b>${escapeHtml("a & b < c")}</b> and <code>tail</code>`;
+    const cut = truncateHtml(value, 20);
+    expect(cut.length).toBeLessThanOrEqual(20);
+    expect(cut).toContain("&amp;");
+    expect(cut.endsWith("</b>")).toBe(true);
+    expect(cut).not.toContain("<co");
   });
 });
 
@@ -53,6 +67,15 @@ describe("formatPermission", () => {
       ctx
     );
     expect(msg).toContain("+1");
+  });
+
+  test("plain mode tells the user to answer in the terminal", () => {
+    const msg = formatPermission(
+      { id: "per_1", sessionID: "ses_1", action: "shell", resources: ["ls"] },
+      ctx,
+      "plain"
+    );
+    expect(msg).toContain(PERMISSION_ANSWER_IN_TERMINAL.en);
   });
 });
 

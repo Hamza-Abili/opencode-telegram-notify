@@ -20,7 +20,10 @@ export function redactToken(text: string, token: string): string {
 }
 
 export class TelegramError extends Error {
-  constructor(message: string, readonly code?: number) {
+  constructor(
+    message: string,
+    readonly code?: number
+  ) {
     super(message);
     this.name = "TelegramError";
   }
@@ -51,9 +54,7 @@ export interface InlineButton {
   callback_data: string;
 }
 
-interface FetchLike {
-  (input: string, init?: RequestInit): Promise<Response>;
-}
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface TelegramClientOptions {
   token: string;
@@ -110,7 +111,10 @@ export class TelegramClient {
           return body.result;
         }
         const code = res.status;
-        const description = redactToken(String(body.description ?? `HTTP ${code}`), this.options.token);
+        const description = redactToken(
+          String(body.description ?? `HTTP ${code}`),
+          this.options.token
+        );
         if (code === 429) {
           lastError = new TelegramError(description, code);
           await sleep((body.parameters?.retry_after ?? 3) * 1000);

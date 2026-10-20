@@ -2,18 +2,24 @@
  * opencode-telegram-notify — plugin entry.
  *
  * Contract (opencode v2): default export `{id, setup}`; `setup` may return a
- * dispose function. `setup` stays synchronous (the loader consumes the
- * returned dispose directly); client resolution and app start happen inside
- * a floating async routine that honors an early dispose.
+ * dispose function. Official 2.0.32 passes the client directly (and supports
+ * an async setup), while early builds passed a promise. Both are accepted:
+ * the direct path starts synchronously; the promise path defers startup and
+ * uses a guard so an immediate dispose cannot leak the app.
  */
 
-import { createApp, type App } from "./app.ts";
+import { type App, createApp } from "./app.ts";
 import type { V2Client, V2PluginDefinition } from "./types.ts";
 
-async function resolveClient(input: unknown): Promise<V2Client | undefined> {
+function isPromiseLike(value: unknown): value is PromiseLike<V2Client> {
+  return typeof (value as { then?: unknown } | undefined)?.then === "function";
+}
+
+function start(client: V2Client): App | undefined {
   try {
-    return (await input) as V2Client;
-  } catch {
+    return createApp(client);
+  } catch (error) {
+    console.log(`[opencode-telegram-notify] failed to start: ${String(error)}`);
     return undefined;
   }
 }
@@ -21,31 +27,31 @@ async function resolveClient(input: unknown): Promise<V2Client | undefined> {
 export default {
   id: "opencode-telegram-notify",
   setup(clientInput) {
+    if (!isPromiseLike(clientInput)) {
+      const app = start(clientInput);
+      return () => app?.dispose();
+    }
+
     let app: App | undefined;
     let disposed = false;
-
-    void (async () => {
-      const client = await resolveClient(clientInput);
-      if (!client) {
-        console.log("[opencode-telegram-notify] plugin client unavailable — disabled");
-        return;
-      }
-      if (disposed) return;
-      try {
-        const started = createApp(client);
+    void Promise.resolve(clientInput)
+      .then((client) => {
+        if (disposed) return;
+        const started = start(client);
         if (disposed) {
-          started.dispose();
+          started?.dispose();
           return;
         }
         app = started;
-      } catch (error) {
-        console.log(`[opencode-telegram-notify] failed to start: ${String(error)}`);
-      }
-    })();
+      })
+      .catch((error) => {
+        console.log(`[opencode-telegram-notify] plugin client unavailable: ${String(error)}`);
+      });
 
     return () => {
       disposed = true;
       app?.dispose();
+      app = undefined;
     };
   },
 } satisfies V2PluginDefinition;

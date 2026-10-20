@@ -1,9 +1,23 @@
-import { describe, expect, test, beforeEach } from "bun:test";
-import { dispatch, startPoller, resetProcessUpdateDedupe } from "../src/poller.ts";
-import { mkContext, permissionAsked } from "./helpers.ts";
-import { rmSync } from "node:fs";
+import { beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { dispatch, resetProcessUpdateDedupe, startPoller } from "../src/poller.ts";
+import { mkContext } from "./helpers.ts";
 
 const CHAT = 5;
+
+function tmpdir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "otn-poller-"));
+}
+
+const fast = {
+  longPollSeconds: 0,
+  pollIntervalMs: 5,
+  acquireDelayMs: 5,
+  standstillMs: 5,
+  failureDelayMs: 5,
+};
 
 const cbUpdate = (messageId: number, data: string, user = 5) => ({
   update_id: 1,
@@ -34,7 +48,9 @@ describe("dispatch — commands", () => {
   });
 
   test("allowedUserIds gate keeps strangers out", async () => {
-    const { ctx, calls } = mkContext("/tmp/proj", { telegram: { botToken: "1:x", chatId: String(CHAT), allowedUserIds: ["5"] } });
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      telegram: { botToken: "1:x", chatId: String(CHAT), allowedUserIds: ["5"] },
+    });
     await dispatch(ctx, msgUpdate("/status", 77));
     expect(calls.sent).toHaveLength(0);
     await dispatch(ctx, msgUpdate("/status", 5));
@@ -104,16 +120,57 @@ describe("dispatch — permission callbacks", () => {
     expect(ctx.pending.size).toBe(0);
   });
 
-  test("reply failure is answered with 'already answered'", async () => {
+  test("retryable reply failure keeps the button active", async () => {
     const { ctx, calls, answered } = mkContext();
     ctx.pending.set(88, { sessionID: "ses_1", requestID: "per_1", action: "shell" });
-    // Force the permission client to fail (simulating an already-settled request).
     const perm = ctx.client.permission;
-    if (perm) perm.reply = async () => { throw new Error("settled"); };
+    if (perm) {
+      perm.reply = async () => {
+        throw new Error("network down");
+      };
+    }
     await dispatch(ctx, cbUpdate(88, "allow"));
-    expect(answered).toHaveLength(0); // reply threw before recording
+    expect(answered).toHaveLength(0);
+    expect(calls.toasts[0].text).toContain("tap again");
+    expect(ctx.pending.has(88)).toBe(true);
+  });
+
+  test("settled reply failure closes the button as 'already answered'", async () => {
+    const { ctx, calls, answered } = mkContext();
+    ctx.pending.set(89, { sessionID: "ses_1", requestID: "per_2", action: "shell" });
+    const perm = ctx.client.permission;
+    if (perm) {
+      perm.reply = async () => {
+        throw Object.assign(new Error("not found"), { status: 404 });
+      };
+    }
+    await dispatch(ctx, cbUpdate(89, "allow"));
+    expect(answered).toHaveLength(0);
     expect(calls.toasts[0].text).toContain("Already answered");
-    expect(ctx.pending.has(88)).toBe(false);
+    expect(ctx.pending.has(89)).toBe(false);
+  });
+
+  test("permission reply falls back to the legacy `reply` field and caches it", async () => {
+    const { ctx, answered } = mkContext();
+    let calls = 0;
+    if (ctx.client.permission) {
+      ctx.client.permission.reply = async (input) => {
+        calls++;
+        if ("decision" in input) throw new Error("unknown field decision");
+        answered.push({
+          sessionID: input.sessionID,
+          requestID: input.requestID,
+          decision: input.reply,
+        });
+      };
+    }
+    ctx.pending.set(90, { sessionID: "ses_1", requestID: "per_3", action: "shell" });
+    await dispatch(ctx, cbUpdate(90, "allow"));
+    ctx.pending.set(91, { sessionID: "ses_1", requestID: "per_4", action: "shell" });
+    await dispatch(ctx, cbUpdate(91, "always"));
+    expect(calls).toBe(3); // decision fail + reply, then cached reply only
+    expect(answered.map((a) => a.decision)).toEqual(["once", "always"]);
+    expect(ctx.permissionReplyField).toBe("reply");
   });
 });
 
@@ -124,21 +181,17 @@ describe("poller lifecycle", () => {
 
   test("registers bot commands and releases the lock on dispose", async () => {
     const { ctx, calls } = mkContext();
-    const lockDir = await import("node:os").then((os) => os.tmpdir());
-    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    // Give the loop one tick to register commands (may be flake-free since the
-    // fake getUpdates resolves immediately).
+    const lockDir = tmpdir();
+    const stop = startPoller(ctx, { ...fast, lockDir });
     await new Promise((r) => setTimeout(r, 50));
     stop();
     expect(calls.commands[0]?.map((c) => c.command)).toContain("start");
+    expect(fs.existsSync(path.join(lockDir, "poller.lock"))).toBe(false);
   });
 
   test("offset advances and updates are not reprocessed across polls", async () => {
     const { ctx, calls } = mkContext();
-    const lockDir = await import("node:os").then((os) => os.tmpdir());
-    // Clean up any existing offset file
-    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
-
+    const lockDir = tmpdir();
     const receivedOffsets: number[] = [];
     // Override getUpdates to capture offsets and return updates sequentially
     ctx.telegram.getUpdates = async (offset: number) => {
@@ -156,9 +209,8 @@ describe("poller lifecycle", () => {
       return [];
     };
 
-    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    // Wait for first poll cycle + long poll timeout + a few empty polls
-    await new Promise((r) => setTimeout(r, 1500));
+    const stop = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 120));
     stop();
 
     // First call gets offset=0, all subsequent calls get offset=11 (10 + 1)
@@ -173,27 +225,33 @@ describe("poller lifecycle", () => {
 
   test("offset advances correctly with multiple updates in one batch", async () => {
     const { ctx, calls } = mkContext();
-    const lockDir = await import("node:os").then((os) => os.tmpdir());
-    // Clean up any existing offset file
-    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
-
+    const lockDir = tmpdir();
     const receivedOffsets: number[] = [];
     ctx.telegram.getUpdates = async (offset: number) => {
       receivedOffsets.push(offset);
       // First call: return multiple updates
       if (receivedOffsets.length === 1) {
         return [
-          { update_id: 20, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
-          { update_id: 21, message: { message_id: 2, chat: { id: CHAT }, text: "/status", from: { id: 5 } } },
-          { update_id: 22, message: { message_id: 3, chat: { id: CHAT }, text: "/help", from: { id: 5 } } },
+          {
+            update_id: 20,
+            message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } },
+          },
+          {
+            update_id: 21,
+            message: { message_id: 2, chat: { id: CHAT }, text: "/status", from: { id: 5 } },
+          },
+          {
+            update_id: 22,
+            message: { message_id: 3, chat: { id: CHAT }, text: "/help", from: { id: 5 } },
+          },
         ];
       }
       // Subsequent calls: return empty
       return [];
     };
 
-    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    await new Promise((r) => setTimeout(r, 1500));
+    const stop = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 120));
     stop();
 
     // First call gets offset=0, all subsequent calls get offset=23 (22 + 1)
@@ -208,10 +266,7 @@ describe("poller lifecycle", () => {
 
   test("offset persists across poller restarts", async () => {
     const { ctx, calls } = mkContext();
-    const lockDir = await import("node:os").then((os) => os.tmpdir());
-    // Clean up any existing offset file
-    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
-
+    const lockDir = tmpdir();
     const receivedOffsets: number[] = [];
     let callCount = 0;
     ctx.telegram.getUpdates = async (offset: number) => {
@@ -219,7 +274,10 @@ describe("poller lifecycle", () => {
       callCount++;
       if (callCount === 1) {
         return [
-          { update_id: 30, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+          {
+            update_id: 30,
+            message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } },
+          },
         ];
       }
       if (callCount === 2) {
@@ -230,13 +288,13 @@ describe("poller lifecycle", () => {
     };
 
     // First poller run
-    const stop1 = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    await new Promise((r) => setTimeout(r, 500));
+    const stop1 = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 60));
     stop1();
 
     // Second poller run (simulating restart)
-    const stop2 = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    await new Promise((r) => setTimeout(r, 500));
+    const stop2 = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 60));
     stop2();
 
     // First call gets offset=0, second poller starts from offset=31
@@ -249,9 +307,7 @@ describe("poller lifecycle", () => {
 
   test("dedupe prevents reprocessing same update_id in same process", async () => {
     const { ctx, calls } = mkContext();
-    const lockDir = await import("node:os").then((os) => os.tmpdir());
-    try { rmSync(`${lockDir}/poller.offset.json`); } catch {}
-
+    const lockDir = tmpdir();
     const receivedOffsets: number[] = [];
     let callCount = 0;
     ctx.telegram.getUpdates = async (offset: number) => {
@@ -259,20 +315,26 @@ describe("poller lifecycle", () => {
       callCount++;
       if (callCount === 1) {
         return [
-          { update_id: 40, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+          {
+            update_id: 40,
+            message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } },
+          },
         ];
       }
       if (callCount === 2) {
         // Simulate Telegram redelivering the same update
         return [
-          { update_id: 40, message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } } },
+          {
+            update_id: 40,
+            message: { message_id: 1, chat: { id: CHAT }, text: "/start", from: { id: 5 } },
+          },
         ];
       }
       return [];
     };
 
-    const stop = startPoller(ctx, { lockDir, longPollSeconds: 1 });
-    await new Promise((r) => setTimeout(r, 1000));
+    const stop = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 100));
     stop();
 
     // Should only process the update once despite redelivery
