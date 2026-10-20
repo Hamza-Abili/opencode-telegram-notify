@@ -22,7 +22,7 @@ describe("loadConfig", () => {
     expect(cfg.language).toBe("en");
     expect(cfg.events.permission).toBe(true);
     expect(cfg.interactions).toBe(true);
-    expect(cfg.idleDebounceMs).toBe(15_000);
+    expect(cfg.idleDebounceMs).toBe(60_000);
   });
 
   test("flat env fallback works", () => {

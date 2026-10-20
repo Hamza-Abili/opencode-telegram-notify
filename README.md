@@ -179,7 +179,8 @@ All options live under `options.` of the plugin entry. Only `botToken` and
 | `events.idle` | boolean | `true` | Completion notifications (debounced) |
 | `events.error` | boolean | `true` | Failure and cancellation notifications |
 | `interactions` | boolean | `true` | When `false`, permissions go out as simple messages (no buttons) |
-| `idleDebounceMs` | number | 15000 | Wait after `execution.succeeded` before pinging you; any new activity cancels it |
+| `idleDebounceMs` | number | 60000 | Wait after `execution.succeeded` before pinging you; any new activity cancels it |
+| `idleCooldownMs` | number | 600000 | Min gap between completion notifications for the same session — conversational pauses never spam (0 disables) |
 | `dedupTtlMs` | number | 120000 | Reserved window for dedupe bookkeeping |
 | `maxMessageChars` | number | 3800 | Max body length (Telegram hard limit is 4096) |
 | `hideCommands` | boolean | `false` | Replace shell/tool arguments with `[n]` in bodies |

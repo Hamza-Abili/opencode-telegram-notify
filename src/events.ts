@@ -20,7 +20,7 @@
  */
 
 import { resolve as resolvePath } from "node:path";
-import { listPendingQuestions, replyPermission, type AppContext } from "./context.ts";
+import { listPendingQuestions, replyPermission, sessionTitle, type AppContext } from "./context.ts";
 import * as fmt from "./format.ts";
 import type { InlineButton } from "./telegram.ts";
 import {
@@ -112,6 +112,8 @@ const ACTIVITY_TYPES = new Set([
 interface RouterState {
   /** sessionID -> timeout handle for the debounced completion notification. */
   idleTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** sessionID -> timestamp of the last completion notification (cooldown). */
+  idleSentAt: Map<string, number>;
   /** sessionIDs created as child sessions (parentID set). */
   children: Set<string>;
 }
@@ -137,7 +139,7 @@ export function createRouter(ctx: AppContext): {
   handle: (envelope: V2EventEnvelope) => Promise<void>;
   dispose: () => void;
 } {
-  const state: RouterState = { idleTimers: new Map(), children: new Set() };
+  const state: RouterState = { idleTimers: new Map(), idleSentAt: new Map(), children: new Set() };
 
   const cfg = ctx.config;
   const fctx = {
@@ -298,9 +300,14 @@ export function createRouter(ctx: AppContext): {
     if (ctx.silenced || !cfg.events.idle) return;
     if (state.children.has(sessionID)) return; // subagent noise
     cancelIdle(sessionID);
-    const title = ctx.sessionTitles.get(sessionID);
-    const t = setTimeout(() => {
+    const t = setTimeout(async () => {
       state.idleTimers.delete(sessionID);
+      // Interactive sessions pause often; at most one completion notification
+      // per idleCooldownMs, so conversational pauses do not spam the chat.
+      const last = state.idleSentAt.get(sessionID) ?? 0;
+      if (Date.now() - last < cfg.idleCooldownMs) return;
+      state.idleSentAt.set(sessionID, Date.now());
+      const title = (await sessionTitle(ctx, sessionID)) ?? ctx.project;
       void ctx.telegram
         .sendMessage(fmt.formatCompleted(sessionID, title, fctx))
         .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));

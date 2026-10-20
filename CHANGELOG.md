@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 — no more completion spam
+
+- **Per-session completion cooldown** (`idleCooldownMs`, default 10 min):
+  an interactive session pauses often, but Telegram now receives at most one
+  "✅ Task completed" per session per cooldown window. Permission, question,
+  failure and cancellation notifications are never delayed.
+- **Details always meaningful**: the title is resolved at send time — cache,
+  then `session.get` write-through — and falls back to the project name, so
+  "(no details)" no longer appears on completions for sessions that started
+  before the plugin activation.
+- **Calmer default debounce**: `idleDebounceMs` default 15 s → 60 s.
+
 ## 0.3.0 — in-chat question answering (wizard)
 
 - **Answer questions from Telegram**: single-select questions (`form.created`

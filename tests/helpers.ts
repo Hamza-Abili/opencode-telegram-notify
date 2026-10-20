@@ -45,6 +45,7 @@ export function config(overrides: Partial<AppConfig> = {}): AppConfig {
     events: { permission: true, question: true, idle: true, error: true },
     interactions: true,
     idleDebounceMs: 10,
+    idleCooldownMs: 0,
     dedupTtlMs: 60_000,
     maxMessageChars: 3800,
     hideCommands: false,

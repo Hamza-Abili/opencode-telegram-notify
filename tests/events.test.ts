@@ -116,6 +116,47 @@ describe("router", () => {
     expect(calls.sent).toHaveLength(0);
   });
 
+  test("completion notifications respect the per-session cooldown", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { idleCooldownMs: 5_000 });
+    const router = createRouter(ctx);
+    // First idle cycle fires (cooldown had elapsed at startup).
+    await router.handle(env("c1", "session.execution.succeeded", { sessionID: "ses_9" }));
+    await new Promise((r) => setTimeout(r, 30));
+    const first = calls.sent.filter((s) => s.text.includes("✅ Task completed"));
+    expect(first).toHaveLength(1);
+    // Second cycle within the cooldown window is silently suppressed.
+    await router.handle(env("c2", "session.step.started", { sessionID: "ses_9" }));
+    await router.handle(env("c3", "session.execution.succeeded", { sessionID: "ses_9" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+
+  test("completion resolves the title via session.get when the cache is empty", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_77", title: "Fetched Title" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("t1", "session.execution.succeeded", { sessionID: "ses_77" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const completed = calls.sent.find((s) => s.text.includes("✅ Task completed"));
+    expect(completed?.text).toContain("Fetched Title");
+    expect(ctx.sessionTitles.get("ses_77")).toBe("Fetched Title");
+  });
+
+  test("completion falls back to the project name when no title exists", async () => {
+    const { ctx, calls } = mkContext();
+    // fakeClient exposes no session surface and nothing cached the title.
+    const router = createRouter(ctx);
+    await router.handle(env("t2", "session.execution.succeeded", { sessionID: "ses_42" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const completed = calls.sent.find((s) => s.text.includes("✅ Task completed"));
+    expect(completed?.text).toContain("proj");
+    expect(completed?.text).not.toContain("(no details)");
+  });
+
   test("child sessions never send lifecycle notifications", async () => {
     const { ctx, calls } = mkContext();
     const router = createRouter(ctx);

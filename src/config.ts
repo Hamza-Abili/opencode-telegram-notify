@@ -28,6 +28,8 @@ export interface AppConfig {
   interactions: boolean;
   /** Debounce window before an idle/completion notification fires (ms). */
   idleDebounceMs: number;
+  /** Minimum gap between completion notifications for the same session (ms); 0 disables. */
+  idleCooldownMs: number;
   /** Time-to-live for duplicate notification suppression (ms). */
   dedupTtlMs: number;
   /** Maximum characters of a formatted message body. */
@@ -124,7 +126,8 @@ export function loadConfig(raw: unknown, env: Record<string, string | undefined>
       error: asBool(events.error, true),
     },
     interactions: asBool(root.interactions, true),
-    idleDebounceMs: asNumber(root.idleDebounceMs, 15_000, 0, 600_000),
+    idleDebounceMs: asNumber(root.idleDebounceMs, 60_000, 0, 600_000),
+    idleCooldownMs: asNumber(root.idleCooldownMs, 600_000, 0, 3_600_000),
     dedupTtlMs: asNumber(root.dedupTtlMs, 120_000, 0, 900_000),
     maxMessageChars: asNumber(root.maxMessageChars, 3800, 500, 3900),
     hideCommands: asBool(root.hideCommands, false),

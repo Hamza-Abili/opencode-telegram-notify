@@ -165,8 +165,29 @@ export async function replyQuestion(
   throw new Error("question reply surface not available");
 }
 
-/** List pending questions for the plugin root, or an empty array when unavailable. */
-export async function listPendingQuestions(ctx: AppContext): Promise<unknown[]> {
+/**
+ * Resolve a session title for notifications: cache first, then the optional
+ * `session.get` surface (cache write-through). Returns undefined when no
+ * surface or lookup succeeds; callers fall back to the project name so the
+ * message never shows "(no details)" for completions.
+ */
+export async function sessionTitle(ctx: AppContext, sessionID: string): Promise<string | undefined> {
+  const cached = ctx.sessionTitles.get(sessionID);
+  if (cached) return cached;
+  const get = ctx.client.session?.get;
+  if (!get) return undefined;
+  try {
+    const info = await get({ sessionID });
+    const title = typeof info?.title === "string" && info.title !== "" ? info.title : undefined;
+    if (title) ctx.sessionTitles.set(sessionID, title);
+    return title;
+  } catch (error) {
+    ctx.logError(`session.get failed: ${String(error)}`);
+    return undefined;
+  }
+}
+
+/** List pending questions for the plugin root, or an empty array when unavailable. */export async function listPendingQuestions(ctx: AppContext): Promise<unknown[]> {
   const list = questionSurface(ctx)?.list;
   if (!list) return [];
   try {
