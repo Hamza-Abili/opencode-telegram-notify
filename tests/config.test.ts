@@ -60,6 +60,13 @@ describe("loadConfig", () => {
   test("numeric clamps stay within range", () => {
     const cfg = loadConfig({ ...base, idleDebounceMs: 9_999_999 }, { T: "1:x", C: "1" });
     expect(cfg.idleDebounceMs).toBe(600_000);
+    const clamped = loadConfig(
+      { ...base, idleCooldownMs: 5_000_000 },
+      { T: "1:x", C: "1" }
+    );
+    expect(clamped.idleCooldownMs).toBe(3_600_000);
+    const neutral = loadConfig({ ...base, idleCooldownMs: -1 }, { T: "1:x", C: "1" });
+    expect(neutral.idleCooldownMs).toBe(0);
   });
 
   test("events flags parse booleans", () => {
