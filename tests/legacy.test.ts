@@ -13,6 +13,12 @@ import {
 
 const ROOT = "/tmp/proj";
 
+/** Assert a fixture constructor succeeded without non-null assertions. */
+function must<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("expected value");
+  return value;
+}
+
 describe("v1 event mapper", () => {
   const map = createV1EventMapper(ROOT);
 
@@ -278,17 +284,18 @@ describe("v1 core", () => {
 
   test("exposes the v2 surface backed by the v1 SDK", async () => {
     const calls: unknown[] = [];
-    const core = createV1Core({
-      directory: ROOT,
-      client: {
-        async postSessionIdPermissionsPermissionId(input: unknown) {
-          calls.push(input);
+    const core = must(
+      createV1Core({
+        directory: ROOT,
+        client: {
+          async postSessionIdPermissionsPermissionId(input: unknown) {
+            calls.push(input);
+          },
         },
-      },
-    });
-    expect(core).toBeDefined();
-    const envelopePromise = core!.client.event!.subscribe()[Symbol.asyncIterator]().next();
-    core!.pushEvent({
+      })
+    );
+    const envelopePromise = must(core.client.event).subscribe()[Symbol.asyncIterator]().next();
+    core.pushEvent({
       type: "permission.updated",
       properties: { id: "p_9", sessionID: "ses_1", title: "Run shell command" },
     });
@@ -341,13 +348,15 @@ describe("v1 core", () => {
   });
 
   test("event queue is bounded with drop-oldest", async () => {
-    const core = createV1Core({
-      directory: ROOT,
-      client: { postSessionIdPermissionsPermissionId() {} },
-    });
-    const iterator = core!.client.event!.subscribe()[Symbol.asyncIterator]();
+    const core = must(
+      createV1Core({
+        directory: ROOT,
+        client: { postSessionIdPermissionsPermissionId() {} },
+      })
+    );
+    const iterator = must(core.client.event).subscribe()[Symbol.asyncIterator]();
     for (let i = 0; i < 260; i++) {
-      core!.pushEvent({ type: "session.idle", properties: { sessionID: `SES_${i}` } });
+      core.pushEvent({ type: "session.idle", properties: { sessionID: `SES_${i}` } });
     }
     const { value } = await iterator.next();
     // 10 oldest of 260 dropped against the 250-slot queue.
@@ -355,12 +364,14 @@ describe("v1 core", () => {
   });
 
   test("pushEvent drops unmapped events", async () => {
-    const core = createV1Core({
-      directory: ROOT,
-      client: { postSessionIdPermissionsPermissionId() {} },
-    });
-    core!.pushEvent({ type: "todo.updated", properties: {} });
-    const race = core!.client.event!.subscribe()[Symbol.asyncIterator]().next();
+    const core = must(
+      createV1Core({
+        directory: ROOT,
+        client: { postSessionIdPermissionsPermissionId() {} },
+      })
+    );
+    core.pushEvent({ type: "todo.updated", properties: {} });
+    const race = must(core.client.event).subscribe()[Symbol.asyncIterator]().next();
     const winner = await Promise.race([
       race.then(() => "mapped"),
       new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),

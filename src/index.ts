@@ -2,8 +2,8 @@
  * opencode-telegram-notify — plugin entry.
  *
  * Contract (opencode v2): default export `{id, setup}`; `setup` may return a
- * dispose function. Official 2.0.32 passes the client directly (and supports
- * an async setup), while early builds passed a promise. Both are accepted:
+ * dispose function. OpenCode 2.x passes the client directly (and supports an
+ * async setup), while early builds passed a promise. Both are accepted:
  * the direct path starts synchronously; the promise path defers startup and
  * uses a guard so an immediate dispose cannot leak the app.
  */

@@ -132,6 +132,7 @@ describe("dispatch — permission callbacks", () => {
     await dispatch(ctx, cbUpdate(88, "allow"));
     expect(answered).toHaveLength(0);
     expect(calls.toasts[0].text).toContain("tap again");
+    expect(calls.edits).toHaveLength(0); // message + buttons stay intact
     expect(ctx.pending.has(88)).toBe(true);
   });
 
@@ -187,6 +188,20 @@ describe("poller lifecycle", () => {
     stop();
     expect(calls.commands[0]?.map((c) => c.command)).toContain("start");
     expect(fs.existsSync(path.join(lockDir, "poller.lock"))).toBe(false);
+  });
+
+  test("a failing setMyCommands is attempted once per activation", async () => {
+    const { ctx } = mkContext();
+    const lockDir = tmpdir();
+    let attempts = 0;
+    ctx.telegram.setMyCommands = async () => {
+      attempts++;
+      throw new Error("commands down");
+    };
+    const stop = startPoller(ctx, { ...fast, lockDir });
+    await new Promise((r) => setTimeout(r, 60));
+    stop();
+    expect(attempts).toBe(1);
   });
 
   test("offset advances and updates are not reprocessed across polls", async () => {

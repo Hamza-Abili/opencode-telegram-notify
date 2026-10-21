@@ -53,6 +53,26 @@ describe("questions — notify", () => {
     expect(ctx.formMsgs.get("frm_1")).toBe(901);
   });
 
+  test("skip button is omitted when the client cannot reject", async () => {
+    const { ctx, calls } = mkContext();
+    if (ctx.client.question) ctx.client.question.reject = undefined;
+    const router = createRouter(ctx);
+    await router.handle(env("f1", "form.created", singleSelectForm()));
+    const buttons = calls.sent[0].buttons as { callback_data: string }[][];
+    expect(buttons.flat().map((b) => b.callback_data)).toEqual(["q:0", "q:1"]);
+  });
+
+  test("notify-only when the client exposes no reply surface", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.client.question = {};
+    ctx.client.session = undefined;
+    const router = createRouter(ctx);
+    await router.handle(env("f1", "form.created", singleSelectForm()));
+    expect(calls.sent[0].buttons).toBeUndefined();
+    expect(calls.sent[0].text).toContain("⌨️");
+    expect(ctx.pendingForms.size).toBe(0);
+  });
+
   test("multi-field form stays notify-only with the terminal pointer", async () => {
     const { ctx, calls } = mkContext();
     const form = singleSelectForm();
@@ -162,6 +182,7 @@ describe("questions — taps", () => {
     }
     await dispatch(ctx, cbUpdate(901, "q:0"));
     expect(calls.toasts.some((t) => t.text.includes("tap again"))).toBe(true);
+    expect(calls.edits).toHaveLength(0); // message + buttons stay intact
     expect(ctx.pendingForms.has(901)).toBe(true);
   });
 
@@ -172,6 +193,55 @@ describe("questions — taps", () => {
     expect(questionAnswers).toHaveLength(0);
     expect(calls.edits.some((e) => e.messageId === 901 && e.text.includes("⏹"))).toBe(true);
     expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("skip falls back to a scoped reject surface", async () => {
+    const { ctx, questionRejects } = withPendingForm();
+    const scoped: { requestID: string }[] = [];
+    ctx.client.question = { reply: async () => undefined };
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      question: {
+        async reject(input) {
+          scoped.push({ requestID: input.requestID });
+        },
+      },
+    };
+    await dispatch(ctx, cbUpdate(901, "qskip"));
+    expect(scoped).toEqual([{ requestID: "frm_1" }]);
+    expect(questionRejects).toHaveLength(0);
+  });
+
+  test("official form errors are recognized when no fallback surface exists", async () => {
+    const { ctx, calls } = withPendingForm();
+    ctx.client.question = {};
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      form: {
+        async reply() {
+          throw Object.assign(new Error("not found"), { status: 404 });
+        },
+      },
+    };
+    await dispatch(ctx, cbUpdate(901, "q:1"));
+    expect(calls.toasts.some((t) => t.text.includes("terminal"))).toBe(true);
+    expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("a failed confirmation edit never reports the answer as failed", async () => {
+    const { ctx, calls, questionAnswers } = withPendingForm();
+    ctx.telegram.editMessageText = async () => {
+      throw new Error("message edit down");
+    };
+    await dispatch(ctx, cbUpdate(901, "q:1"));
+    expect(questionAnswers).toHaveLength(1);
+    expect(ctx.pendingForms.size).toBe(0);
+    expect(calls.toasts.some((t) => t.text.includes("✅"))).toBe(true);
+    expect(calls.toasts.some((t) => t.text.includes("tap again"))).toBe(false);
   });
 
   test("stale question tap answers nowhere and marks the message stale", async () => {

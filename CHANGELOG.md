@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- Question buttons are attached only when the client actually exposes a reply
+  surface; otherwise the form is notify-only with the terminal pointer.
+- Permission and question taps share one best-effort outcome helper. Failed
+  replies keep the message **and its buttons** for a retry (toast only), while
+  a failed confirmation edit can no longer turn a successful reply into a
+  misleading "tap again" error.
+- Question skip is only offered when the client exposes a reject surface, and
+  it now prefers the scoped surface when the global one cannot reject.
+- Completion notifications show project + cached session title once (no
+  duplicated title); every message header now carries the project name.
+- Bot command registration is attempted once per ownership acquisition (and
+  retried after a lost/regained lock) instead of every poll cycle, so a failing
+  `setMyCommands` cannot hammer the API.
+- CI runs Biome lint and installs with `--frozen-lockfile` (release too).
+- README: tested on OpenCode 2.1.1; stale `dedupTtlMs` row removed.
+
+## 0.4.2
+
+- Version bump to refresh the OpenCode npm cache; contains the 0.4.1 reply
+  diagnostics.
+
+## 0.4.1
+
+- `logReplyError()` records code/status/message/cause/response (token-redacted)
+  to diagnose false "already answered" reports.
+
 ## 0.4.0 — reliability, safety and ergonomics
 
 - **Event stream cancellation**: proper `AbortSignal` integration with

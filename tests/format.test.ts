@@ -18,6 +18,7 @@ const ctx = {
   language: "en" as const,
   hideCommands: false,
   maxBody: 3800,
+  project: "my-app",
   sessionTitle: (id: string) => (id === "ses_1" ? "Fix login" : undefined),
 };
 
@@ -47,6 +48,7 @@ describe("formatPermission", () => {
       ctx
     );
     expect(msg).toContain("<b>🔐 Permission request</b>");
+    expect(msg).toContain("Project: my-app");
     expect(msg).toContain("Session: Fix login");
     expect(msg).toContain("<b>shell</b>");
     expect(msg).toContain("<code>ls -la</code>");
@@ -128,10 +130,12 @@ describe("formatQuestion", () => {
 });
 
 describe("lifecycle", () => {
-  test("completed with title", () => {
-    const msg = formatCompleted("ses_1", "Fix login", ctx);
+  test("completed shows project and session title exactly once", () => {
+    const msg = formatCompleted("ses_1", ctx);
     expect(msg).toContain("✅ Task completed");
-    expect(msg).toContain("Fix login");
+    expect(msg).toContain("Project: my-app");
+    expect(msg).toContain("Session: Fix login");
+    expect(msg.match(/Fix login/g)).toHaveLength(1);
   });
   test("failed includes error type and message", () => {
     const msg = formatFailed({ type: "provider.no-route", message: "Model unavailable" }, ctx);

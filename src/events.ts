@@ -20,7 +20,14 @@
  */
 
 import { resolve as resolvePath } from "node:path";
-import { type AppContext, type FormChoice, listPendingQuestions, sessionTitle } from "./context.ts";
+import {
+  type AppContext,
+  type FormChoice,
+  hasQuestionRejectSurface,
+  hasQuestionReplySurface,
+  listPendingQuestions,
+  sessionTitle,
+} from "./context.ts";
 import * as fmt from "./format.ts";
 import {
   ANSWER_ALWAYS,
@@ -178,6 +185,7 @@ export function createRouter(
     language: cfg.language,
     hideCommands: cfg.hideCommands,
     maxBody: cfg.maxMessageChars,
+    project: ctx.project,
     sessionTitle: (sessionID: string) => ctx.sessionTitles.get(sessionID),
   };
 
@@ -292,11 +300,11 @@ export function createRouter(
     };
   }
 
-  function questionButtons(choices: FormChoice[]): InlineButton[][] {
+  function questionButtons(choices: FormChoice[], withSkip: boolean): InlineButton[][] {
     const rows: InlineButton[][] = choices.map((choice, i) => [
       { text: choice.label.slice(0, 60), callback_data: `q:${i}` },
     ]);
-    rows.push([{ text: QUESTION_SKIP[cfg.language], callback_data: "qskip" }]);
+    if (withSkip) rows.push([{ text: QUESTION_SKIP[cfg.language], callback_data: "qskip" }]);
     return rows;
   }
 
@@ -310,7 +318,14 @@ export function createRouter(
     // startup window cannot duplicate the notification either.
     ctx.formMsgs.set(form.id, -1);
     const question = singleQuestionChoices(form);
-    const buttons = canTap() && question ? questionButtons(question.choices) : undefined;
+    const hasSurface = hasQuestionReplySurface(ctx);
+    const buttons =
+      question && canTap() && hasSurface
+        ? questionButtons(question.choices, hasQuestionRejectSurface(ctx))
+        : undefined;
+    if (question && canTap() && !hasSurface) {
+      ctx.log(`question surface not available for form ${form.id}, sending notify-only`);
+    }
     try {
       const messageId = await ctx.telegram.sendMessage(
         fmt.formatQuestion(created, fctx, buttons ? "buttons" : "plain"),
@@ -367,9 +382,11 @@ export function createRouter(
       if (Date.now() - last < cfg.idleCooldownMs) return;
       state.idleSentAt.set(sessionID, Date.now());
       trimMap(state.idleSentAt);
-      const title = (await sessionTitle(ctx, sessionID)) ?? ctx.project;
+      // Warm the title cache so the header can show "Session: …"; the project
+      // name is always present as a fallback.
+      await sessionTitle(ctx, sessionID);
       void ctx.telegram
-        .sendMessage(fmt.formatCompleted(sessionID, title, fctx))
+        .sendMessage(fmt.formatCompleted(sessionID, fctx))
         .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));
     }, cfg.idleDebounceMs);
     // Never keep a server process alive only because a completion notification

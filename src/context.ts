@@ -142,6 +142,20 @@ export function isSettledError(error: unknown): boolean {
   );
 }
 
+/** Check if any question reply surface is available on the client. */
+export function hasQuestionReplySurface(ctx: AppContext): boolean {
+  return !!(
+    ctx.client.session?.form?.reply ||
+    ctx.client.question?.reply ||
+    ctx.client.session?.question?.reply
+  );
+}
+
+/** Check if any question reject surface is available. */
+export function hasQuestionRejectSurface(ctx: AppContext): boolean {
+  return !!(ctx.client.question?.reject || ctx.client.session?.question?.reject);
+}
+
 /** Log the full error details for debugging permission/form replies. */
 export function logReplyError(ctx: AppContext, label: string, error: unknown): void {
   const err = error as
@@ -182,7 +196,6 @@ async function replyWithQuestionSurface(
       sessionID,
       questionV2Reply: { answers },
     });
-    ctx.log("question reply via session-scoped surface succeeded");
     return;
   }
   throw new Error("question reply surface not available");
@@ -203,7 +216,9 @@ export async function replyQuestion(
   choice: FormChoice | null
 ): Promise<void> {
   if (choice === null) {
-    const surface = questionSurface(ctx) ?? questionSurface(ctx, true);
+    // Skip needs a reject surface; prefer the first surface that has one
+    // instead of assuming the global surface exposes the full API.
+    const surface = [questionSurface(ctx), questionSurface(ctx, true)].find((s) => s?.reject);
     if (!surface?.reject) throw new Error("question reject surface not available");
     await surface.reject({ requestID: formID, sessionID });
     return;
@@ -216,6 +231,9 @@ export async function replyQuestion(
       await form.reply({ sessionID, formID, answer });
       return;
     } catch (error) {
+      // Without a fallback surface, surface the real error so settled
+      // requests are still recognized instead of being reported as retryable.
+      if (!ctx.client.question?.reply && !ctx.client.session?.question?.reply) throw error;
       ctx.log(`session.form.reply failed, trying question.reply: ${String(error)}`);
     }
   }

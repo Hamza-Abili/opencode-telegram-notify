@@ -270,11 +270,7 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
 
   const decision = DECISIONS[cb.data];
   if (!decision) {
-    try {
-      await ctx.telegram.answerCallbackQuery(cb.id, EXPIRED_OR_STALE[ctx.config.language]);
-    } catch {
-      // ignore
-    }
+    await reportOutcome(ctx, undefined, cb.id, EXPIRED_OR_STALE[ctx.config.language]);
     return;
   }
 
@@ -286,32 +282,17 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
       decision === "reject"
         ? DONE_REJECTED[lang]
         : tr(lang, DONE_ALLOWED, { decision: decisionLabel(lang, decision) });
-    try {
-      await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
-      await ctx.telegram.answerCallbackQuery(cb.id, text);
-    } catch (editError) {
-      ctx.logError(`edit/ack after reply failed: ${String(editError)}`);
-    }
+    await reportOutcome(ctx, messageId, cb.id, text);
   } catch (error) {
     logReplyError(ctx, "permission reply", error);
     if (isSettledError(error)) {
       ctx.pending.delete(messageId);
-      try {
-        await ctx.telegram.answerCallbackQuery(cb.id, ANSWERED_IN_TERMINAL[lang]);
-        await ctx.telegram
-          .editMessageText(messageId, `<b>${escapeHtml(ANSWERED_IN_TERMINAL[lang])}</b>`)
-          .catch(() => undefined);
-      } catch {
-        // ignore
-      }
+      await reportOutcome(ctx, messageId, cb.id, ANSWERED_IN_TERMINAL[lang]);
     } else {
-      // Keep the pending entry: the user can tap again after a transient
-      // network/server failure instead of losing the only interactive path.
-      try {
-        await ctx.telegram.answerCallbackQuery(cb.id, REPLY_FAILED_RETRY[lang]);
-      } catch {
-        // ignore
-      }
+      // Keep the pending entry and the message with its buttons: the user can
+      // tap again after a transient network/server failure. Editing the body
+      // here would remove the inline keyboard and the only interactive path.
+      await reportOutcome(ctx, undefined, cb.id, REPLY_FAILED_RETRY[lang]);
     }
   }
 }
@@ -322,15 +303,31 @@ async function staleCallbackAck(
   callbackId: string,
   messageId?: number
 ): Promise<void> {
-  try {
-    await ctx.telegram.answerCallbackQuery(callbackId, EXPIRED_OR_STALE[ctx.config.language]);
-    if (messageId !== undefined) {
-      await ctx.telegram
-        .editMessageText(messageId, `<i>${escapeHtml(EXPIRED_OR_STALE[ctx.config.language])}</i>`)
-        .catch(() => undefined);
+  await reportOutcome(ctx, messageId, callbackId, EXPIRED_OR_STALE[ctx.config.language], "italic");
+}
+
+/**
+ * Show a tap outcome in both places: a toast on the button and the message
+ * body (which also drops the now-useless keyboard). Feedback is best-effort:
+ * a failed edit/ack never turns a successful reply into an error path.
+ */
+async function reportOutcome(
+  ctx: AppContext,
+  messageId: number | undefined,
+  callbackId: string,
+  text: string,
+  style: "bold" | "italic" = "bold"
+): Promise<void> {
+  const escaped = escapeHtml(text);
+  const html = style === "italic" ? `<i>${escaped}</i>` : `<b>${escaped}</b>`;
+  const results = await Promise.allSettled([
+    ctx.telegram.answerCallbackQuery(callbackId, text),
+    ...(messageId === undefined ? [] : [ctx.telegram.editMessageText(messageId, html)]),
+  ]);
+  for (const result of results) {
+    if (result.status === "rejected") {
+      ctx.logError(`tap feedback failed: ${String(result.reason)}`);
     }
-  } catch {
-    // ignore
   }
 }
 
@@ -352,29 +349,20 @@ async function answerForm(
     await replyQuestion(ctx, formEntry.formID, formEntry.sessionID, formEntry.fieldKey, choice);
     ctx.pendingForms.delete(messageId);
     const text = choice === null ? DONE_SKIPPED[lang] : DONE_ANSWERED[lang];
-    await ctx.telegram.editMessageText(messageId, `<b>${escapeHtml(text)}</b>`);
-    await ctx.telegram.answerCallbackQuery(callbackId, text);
+    await reportOutcome(ctx, messageId, callbackId, text);
   } catch (error) {
     logReplyError(ctx, "question reply", error);
     if (isSettledError(error)) {
       ctx.pendingForms.delete(messageId);
-      try {
-        await ctx.telegram.answerCallbackQuery(callbackId, ANSWERED_IN_TERMINAL[lang]);
-        await ctx.telegram
-          .editMessageText(messageId, `<b>${escapeHtml(ANSWERED_IN_TERMINAL[lang])}</b>`)
-          .catch(() => undefined);
-      } catch {
-        // ignore
-      }
+      await reportOutcome(ctx, messageId, callbackId, ANSWERED_IN_TERMINAL[lang]);
     } else {
-      try {
-        await ctx.telegram.answerCallbackQuery(callbackId, REPLY_FAILED_RETRY[lang]);
-      } catch {
-        // ignore
-      }
+      // Keep the pending entry and the message with its buttons so the tap can
+      // be retried; an edit would strip the inline keyboard.
+      await reportOutcome(ctx, undefined, callbackId, REPLY_FAILED_RETRY[lang]);
     }
   }
 }
+
 /** Route one Telegram update (commands and callbacks). Exported for tests. */
 export async function dispatch(ctx: AppContext, update: TelegramUpdate): Promise<void> {
   if (update.callback_query) {
@@ -402,13 +390,14 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
 
   let running = true;
   let owned = false;
-  let commandsRegistered = false;
+  let commandsAttempted = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let offset = readOffset(lockDir);
 
   function setInteractive(value: boolean): void {
     if (owned === value) return;
     owned = value;
+    if (!value) commandsAttempted = false; // retry the menu after regaining ownership
     ctx.interactive = value;
     try {
       options.onInteractiveChange?.(value);
@@ -434,7 +423,12 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         // alive just because of a poller heartbeat.
         (heartbeat as unknown as { unref?: () => void }).unref?.();
       }
-      if (!commandsRegistered) {
+      if (!commandsAttempted) {
+        // The menu is cosmetic: attempt it once per ownership acquisition
+        // instead of retrying every poll cycle (which would hammer the API on
+        // failure). A lost/regained lock resets the flag, so a boot-time
+        // network failure still recovers.
+        commandsAttempted = true;
         try {
           const lang = ctx.config.language;
           await ctx.telegram.setMyCommands([
@@ -444,7 +438,6 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
             { command: "stop", description: COMMAND_STOP[lang] },
             { command: "help", description: COMMAND_HELP[lang] },
           ]);
-          commandsRegistered = true;
         } catch (error) {
           ctx.logError(`setMyCommands failed: ${String(error)}`);
         }

@@ -93,13 +93,15 @@ export interface FormatContext {
   language: Language;
   hideCommands: boolean;
   maxBody: number;
+  /** Project name (basename of the OpenCode root), shown in every header. */
+  project?: string;
   sessionTitle?: (sessionID: string) => string | undefined;
 }
 
-function header(title: string, ctx: FormatContext, sessionID?: string, project?: string): string {
+function header(title: string, ctx: FormatContext, sessionID?: string): string {
   const lines = [`<b>${title}</b>`];
   const who: string[] = [];
-  if (project) who.push(`${PROJECT[ctx.language]}: ${escapeHtml(project)}`);
+  if (ctx.project) who.push(`${PROJECT[ctx.language]}: ${escapeHtml(ctx.project)}`);
   const st = sessionID ? ctx.sessionTitle?.(sessionID) : undefined;
   if (st) who.push(`${SESSION[ctx.language]}: ${escapeHtml(truncate(st, 80))}`);
   if (who.length > 0) lines.push(who.join(" · "));
@@ -152,16 +154,8 @@ export function formatQuestion(
 }
 
 /** Task lifecycle notifications. */
-export function formatCompleted(
-  sessionID: string,
-  title: string | undefined,
-  ctx: FormatContext
-): string {
-  const body = [
-    header(COMPLETED[ctx.language], ctx, sessionID),
-    title ? escapeHtml(truncate(title, 120)) : EMPTY[ctx.language],
-  ];
-  return truncateHtml(body.join("\n"), ctx.maxBody);
+export function formatCompleted(sessionID: string, ctx: FormatContext): string {
+  return truncateHtml(header(COMPLETED[ctx.language], ctx, sessionID), ctx.maxBody);
 }
 
 export function formatFailed(
