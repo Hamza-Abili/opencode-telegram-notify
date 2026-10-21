@@ -1,22 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — question surface guard and safer taps
 
 - Question buttons are attached only when the client actually exposes a reply
-  surface; otherwise the form is notify-only with the terminal pointer.
+  surface; otherwise the form is notify-only with the terminal pointer
+  (OpenCode 2.1.1 currently exposes none, so questions there are notify-only).
 - Permission and question taps share one best-effort outcome helper. Failed
   replies keep the message **and its buttons** for a retry (toast only), while
   a failed confirmation edit can no longer turn a successful reply into a
   misleading "tap again" error.
-- Question skip is only offered when the client exposes a reject surface, and
-  it now prefers the scoped surface when the global one cannot reject.
+- Question skip is offered only when a reject surface exists, prefers the
+  global surface and falls back to the scoped one when the global cannot
+  reject, and `session.form.reply` errors are preserved when there is no
+  fallback so settled requests are still recognized.
 - Completion notifications show project + cached session title once (no
   duplicated title); every message header now carries the project name.
 - Bot command registration is attempted once per ownership acquisition (and
   retried after a lost/regained lock) instead of every poll cycle, so a failing
   `setMyCommands` cannot hammer the API.
 - CI runs Biome lint and installs with `--frozen-lockfile` (release too).
-- README: tested on OpenCode 2.1.1; stale `dedupTtlMs` row removed.
+- README: tested on OpenCode 2.1.1; stale `dedupTtlMs` row removed;
+  `session.form.cancel` noted as a future skip surface.
 
 ## 0.4.2
 
