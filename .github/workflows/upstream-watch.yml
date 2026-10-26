@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           # The version this plugin was last verified against lives in the README.
-          tested=$(grep -oE "tested on [0-9]+\.[0-9]+\.[0-9]+;" README.md | head -1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+$" || true)
+          tested=$(grep -oE "tested on [0-9]+\.[0-9]+\.[0-9]+;" README.md | head -1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" || true)
           # Newest plain semver tag across both v1 and v2 lines.
           latest=$(gh api 'repos/anomalyco/opencode/tags?per_page=100' --paginate --jq '.[].name' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//')
