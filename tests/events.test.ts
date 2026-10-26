@@ -174,6 +174,70 @@ describe("router", () => {
     expect(ctx.sessionTitles.get("ses_77")).toBe("Fetched Title");
   });
 
+  test("completion includes the usage line when session.get reports cost and tokens", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.client.session = {
+      async get() {
+        return {
+          id: "ses_u",
+          title: "Usage Session",
+          cost: 0.042,
+          tokens: {
+            input: 12800,
+            output: 3200,
+            reasoning: 0,
+            cache: { read: 400, write: 100 },
+          },
+        };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("u1", "session.execution.succeeded", { sessionID: "ses_u" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const completed = calls.sent.find((s) => s.text.includes("✅ Task completed"));
+    expect(completed?.text).toContain("⚡");
+    expect(completed?.text).toContain("13.3k in");
+    expect(completed?.text).toContain("3.2k out");
+    expect(completed?.text).toContain("$0.042");
+  });
+
+  test("events.usage=false omits the usage line but keeps the title", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      events: { permission: true, question: true, idle: true, error: true, usage: false },
+    });
+    ctx.client.session = {
+      async get() {
+        return {
+          id: "ses_u2",
+          title: "Usage Session",
+          cost: 0.042,
+          tokens: { input: 12800, output: 3200, reasoning: 0, cache: { read: 0, write: 0 } },
+        };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("u2", "session.execution.succeeded", { sessionID: "ses_u2" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const completed = calls.sent.find((s) => s.text.includes("✅ Task completed"));
+    expect(completed?.text).toContain("Usage Session");
+    expect(completed?.text).not.toContain("⚡");
+  });
+
+  test("completion omits the usage line when the session surface reports nothing", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_u3", title: "No Usage" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("u3", "session.execution.succeeded", { sessionID: "ses_u3" }));
+    await new Promise((r) => setTimeout(r, 40));
+    const completed = calls.sent.find((s) => s.text.includes("✅ Task completed"));
+    expect(completed?.text).toContain("No Usage");
+    expect(completed?.text).not.toContain("⚡");
+  });
+
   test("completion falls back to the project name when no title exists", async () => {
     const { ctx, calls } = mkContext();
     // fakeClient exposes no session surface and nothing cached the title.

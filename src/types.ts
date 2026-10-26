@@ -19,6 +19,18 @@ export interface V2SessionInfo {
   directory?: string;
   location?: { directory?: string };
   time?: { created?: number; updated?: number };
+  cost?: number;
+  tokens?: TokenUsageInfo;
+}
+
+/** Cumulative token counters reported by the opencode v2 session surface.
+ *  `reasoning` and `cache` are optional: older hosts may omit them, and the
+ *  runtime guard only trusts numeric `input`/`output`. */
+export interface TokenUsageInfo {
+  input: number;
+  output: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
 }
 
 /** Event envelope as delivered by `client.event.subscribe()`. */

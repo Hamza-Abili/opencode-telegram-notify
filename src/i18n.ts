@@ -232,3 +232,44 @@ export const EMPTY = {
   en: "(no details)",
   it: "(nessun dettaglio)",
 } as const;
+
+export const USAGE_LABEL = {
+  en: "⚡",
+  it: "⚡",
+} as const;
+
+export const USAGE_IN = {
+  en: "in",
+  it: "in",
+} as const;
+
+export const USAGE_OUT = {
+  en: "out",
+  it: "out",
+} as const;
+
+/** Friendly headline for failure notifications caused by a usage limit. */
+export const LIMIT_FREE = {
+  en: "⛔ Free usage limit reached",
+  it: "⛔ Limite utilizzo gratuito raggiunto",
+} as const;
+
+export const LIMIT_QUOTA = {
+  en: "⛔ Provider quota reached",
+  it: "⛔ Quota provider raggiunta",
+} as const;
+
+export const LIMIT_RATE = {
+  en: "⛔ Rate limit reached",
+  it: "⛔ Rate limit raggiunto",
+} as const;
+
+export const LIMIT_BUDGET = {
+  en: "⛔ Workspace budget reached",
+  it: "⛔ Budget del workspace raggiunto",
+} as const;
+
+export const LIMIT_MODEL_BUDGET = {
+  en: "⛔ Model budget reached",
+  it: "⛔ Budget del modello raggiunto",
+} as const;

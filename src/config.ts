@@ -12,6 +12,7 @@ export interface EventsConfig {
   question: boolean;
   idle: boolean;
   error: boolean;
+  usage: boolean;
 }
 
 export interface TelegramConfig {
@@ -138,6 +139,7 @@ export function loadConfig(
       question: asBool(events.question, true),
       idle: asBool(events.idle, true),
       error: asBool(events.error, true),
+      usage: asBool(events.usage, true),
     },
     interactions: asBool(root.interactions, true),
     idleDebounceMs: asNumber(root.idleDebounceMs, 60_000, 0, 600_000),

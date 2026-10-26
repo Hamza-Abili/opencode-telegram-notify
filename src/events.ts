@@ -26,7 +26,7 @@ import {
   hasQuestionRejectSurface,
   hasQuestionReplySurface,
   listPendingQuestions,
-  sessionTitle,
+  sessionInfo,
 } from "./context.ts";
 import * as fmt from "./format.ts";
 import {
@@ -382,11 +382,12 @@ export function createRouter(
       if (Date.now() - last < cfg.idleCooldownMs) return;
       state.idleSentAt.set(sessionID, Date.now());
       trimMap(state.idleSentAt);
-      // Warm the title cache so the header can show "Session: …"; the project
-      // name is always present as a fallback.
-      await sessionTitle(ctx, sessionID);
+      // One lookup warms the title cache (header "Session: …") and, when the
+      // host reports them, the cumulative cost/token counters for the usage
+      // line; the project name stays as the fallback header.
+      const info = await sessionInfo(ctx, sessionID);
       void ctx.telegram
-        .sendMessage(fmt.formatCompleted(sessionID, fctx))
+        .sendMessage(fmt.formatCompleted(sessionID, fctx, cfg.events.usage ? info : undefined))
         .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));
     }, cfg.idleDebounceMs);
     // Never keep a server process alive only because a completion notification

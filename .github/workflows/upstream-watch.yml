@@ -74,6 +74,7 @@ jobs:
             echo "- [ ] form events (\`form.created/replied/cancelled\`) and any new plugin form reply surface (upstream: anomalyco/opencode#51108)"
             echo "- [ ] session lifecycle events and activity types used for debounce"
             echo "- [ ] plugin client surface changes (options, location, event.subscribe)"
+            echo "- [ ] session info usage fields (cost/tokens) and any plugin-visible usage limits surface"
             echo ""
             echo "Release notes (first 6000 chars):"
             echo '```'

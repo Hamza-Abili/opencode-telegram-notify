@@ -11,6 +11,7 @@ import type {
   LooseQuestion,
   PermissionDecision,
   PermissionReplyField,
+  TokenUsageInfo,
   V2Client,
 } from "./types.ts";
 
@@ -241,24 +242,30 @@ export async function replyQuestion(
 }
 
 /**
- * Resolve a session title for notifications: cache first, then the optional
- * `session.get` surface (cache write-through). Returns undefined when no
- * surface or lookup succeeds; callers fall back to the project name so the
- * message never shows "(no details)" for completions.
+ * One `session.get` call for the completion path: warms the title cache and
+ * returns the session's cumulative cost/token counters when the host reports
+ * them (opencode v2 sessions do; v1 and minimal surfaces do not, and the
+ * caller then simply omits the usage line).
  */
-export async function sessionTitle(
+export async function sessionInfo(
   ctx: AppContext,
   sessionID: string
-): Promise<string | undefined> {
-  const cached = ctx.sessionTitles.get(sessionID);
-  if (cached) return cached;
+): Promise<{ title?: string; cost?: number; tokens?: TokenUsageInfo } | undefined> {
   const get = ctx.client.session?.get;
   if (!get) return undefined;
   try {
     const info = await get({ sessionID });
     const title = typeof info?.title === "string" && info.title !== "" ? info.title : undefined;
     if (title) ctx.sessionTitles.set(sessionID, title);
-    return title;
+    const tokens = info?.tokens;
+    return {
+      title,
+      cost: typeof info?.cost === "number" && Number.isFinite(info.cost) ? info.cost : undefined,
+      tokens:
+        tokens && typeof tokens.input === "number" && typeof tokens.output === "number"
+          ? tokens
+          : undefined,
+    };
   } catch (error) {
     ctx.logError(`session.get failed: ${String(error)}`);
     return undefined;

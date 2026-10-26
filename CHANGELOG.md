@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 — token usage on completions and limit labels
+
+- Completion notifications now append the session's cumulative usage line
+  (`⚡ 13.2k in · 3.2k out · $0.042`) read through the supported
+  `session.get` surface — no HTTP port sniffing, no per-event accounting.
+  Folded into the existing single completion lookup (which already fetched
+  the title); `events.usage: false` disables the line. v1 hosts simply omit
+  it. Prompt side folds in cache read+write, response side reasoning (same
+  grouping upstream bills); the cost segment is dropped when it rounds to
+  zero.
+- Failure notifications caused by a usage limit (`provider.free-limit`,
+  `provider.quota`, `provider.rate-limit`, `provider.budget-limit`,
+  `provider.model-budget-limit`) show a friendly en/it headline instead of
+  the raw error code; the upstream message is kept underneath.
+- New tests cover the usage line, its omission when the host reports
+  nothing, the `events.usage` flag, the formatting helpers, and the limit
+  labels (127 tests). The two Console-budget labels are forward-looking:
+  v2.1.4 core emits the free-tier/quota/rate-limit types; budget types land
+  when the Console budget flow reaches core.
+
 ## 0.4.4 — discoverability and upstream version watch
 
 - npm keywords expanded for search/discovery, and the package now declares its

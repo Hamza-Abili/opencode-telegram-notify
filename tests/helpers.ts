@@ -42,7 +42,7 @@ export function config(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     telegram: { botToken: "1:x", chatId: "5", allowedUserIds: [] },
     language: "en",
-    events: { permission: true, question: true, idle: true, error: true },
+    events: { permission: true, question: true, idle: true, error: true, usage: true },
     interactions: true,
     idleDebounceMs: 10,
     idleCooldownMs: 0,
