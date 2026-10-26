@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.4 — discoverability and upstream version watch
+
+- npm keywords expanded for search/discovery, and the package now declares its
+  OpenDock-detectable compatibility explicitly: `engines.opencode`
+  (`>=1.18 <2 || >=2.0`) plus the `opencode-v1` / `opencode-v2` keywords
+  (the plugin has zero runtime deps, so the SDK-dependency signal OpenDock
+  usually uses is absent by design). GitHub topics extended too.
+- New `upstream-watch` workflow (weekly + manual): opens a "Review
+  compatibility with OpenCode <version>" issue when a new upstream release
+  lands, with the release notes and the compatibility checklist, instead of
+  letting the plugin drift silently. It reads upstream **tags** (OpenCode
+  publishes GitHub Releases only for the v1 line; v2 ships as tags + npm),
+  and skips with a warning if the README version anchor is missing.
+- README: tested on OpenCode 2.1.4; v1 floor documented as 1.18+; the
+  question-button fallback now links the upstream tracking issue
+  ([anomalyco/opencode#51108](https://github.com/anomalyco/opencode/issues/51108)).
+
 ## 0.4.3 — question surface guard and safer taps
 
 - Question buttons are attached only when the client actually exposes a reply
