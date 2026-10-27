@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1 — question answers match the form schema
+
+- `session.form.reply` now sends a string for `string` fields and a one-item
+  array for `multiselect` fields. The old array-only shape was rejected by
+  `Form.validateAnswer` for the built-in `question` tool's single-select
+  fields, so taps would have failed as soon as a host exposed the form reply
+  surface.
+- Skip prefers `session.form.cancel` when the host exposes it, falling back
+  to `question.reject` on older hosts; the skip button is offered when either
+  surface exists.
+- Tests cover both answer shapes and both skip surfaces (130 tests). On
+  OpenCode 2.1.x the plugin context still exposes no form surface, so
+  questions remain notify-only until upstream
+  [#51108](https://github.com/anomalyco/opencode/issues/51108) lands.
+
 ## 0.5.0 — token usage on completions and limit labels
 
 - Completion notifications now append the session's cumulative usage line

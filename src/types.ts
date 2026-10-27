@@ -188,6 +188,7 @@ export interface V2Client {
     /** Newer hosts expose the form API under `session.form`. */
     form?: {
       reply(input: { sessionID: string; formID: string; answer: FormAnswer }): Promise<unknown>;
+      cancel?(input: { sessionID: string; formID: string; message?: string }): Promise<unknown>;
     };
     /** Some v2 builds expose question answering under `session.question`. */
     question?: LooseQuestion;

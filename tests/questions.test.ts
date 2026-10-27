@@ -53,7 +53,7 @@ describe("questions — notify", () => {
     expect(ctx.formMsgs.get("frm_1")).toBe(901);
   });
 
-  test("skip button is omitted when the client cannot reject", async () => {
+  test("skip button is omitted when the client cannot skip", async () => {
     const { ctx, calls } = mkContext();
     if (ctx.client.question) ctx.client.question.reject = undefined;
     const router = createRouter(ctx);
@@ -135,6 +135,7 @@ describe("questions — taps", () => {
       formID: "frm_1",
       sessionID: "ses_1",
       fieldKey: "env",
+      fieldType: "multiselect",
       options: [
         { value: "staging", label: "Alpha (staging)" },
         { value: "prod", label: "Beta (prod)" },
@@ -152,7 +153,28 @@ describe("questions — taps", () => {
     expect(ctx.pendingForms.size).toBe(0);
   });
 
-  test("official session.form.reply receives the field key and machine value", async () => {
+  test("official session.form.reply sends a one-item array for a multiselect field", async () => {
+    const { ctx, calls } = mkContext();
+    const replies: unknown[] = [];
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      form: {
+        async reply(input) {
+          replies.push(input);
+        },
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("f12", "form.created", singleSelectForm()));
+    await dispatch(ctx, cbUpdate(901, "q:1"));
+    expect(replies).toEqual([{ sessionID: "ses_1", formID: "frm_1", answer: { env: ["prod"] } }]);
+    expect(calls.edits.some((e) => e.text.includes("✅"))).toBe(true);
+    expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("official session.form.reply sends a string for a string field", async () => {
     const built = withPendingForm();
     const { ctx, calls } = built;
     const replies: unknown[] = [];
@@ -166,8 +188,12 @@ describe("questions — taps", () => {
         },
       },
     };
+    const form = singleSelectForm();
+    form.form.fields[0].type = "string";
+    const router = createRouter(ctx);
+    await router.handle(env("f10", "form.created", form));
     await dispatch(ctx, cbUpdate(901, "q:1"));
-    expect(replies).toEqual([{ sessionID: "ses_1", formID: "frm_1", answer: { env: ["prod"] } }]);
+    expect(replies).toEqual([{ sessionID: "ses_1", formID: "frm_1", answer: { env: "prod" } }]);
     expect(calls.edits.some((e) => e.text.includes("✅"))).toBe(true);
     expect(ctx.pendingForms.size).toBe(0);
   });
@@ -186,7 +212,54 @@ describe("questions — taps", () => {
     expect(ctx.pendingForms.has(901)).toBe(true);
   });
 
-  test("tap qskip rejects through question.reject", async () => {
+  test("tap qskip prefers session.form.cancel over question.reject", async () => {
+    const { ctx, calls, questionRejects, questionAnswers } = withPendingForm();
+    const cancelled: unknown[] = [];
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      form: {
+        async reply() {
+          return undefined;
+        },
+        async cancel(input) {
+          cancelled.push(input);
+        },
+      },
+    };
+    await dispatch(ctx, cbUpdate(901, "qskip"));
+    expect(cancelled).toEqual([{ sessionID: "ses_1", formID: "frm_1" }]);
+    expect(questionRejects).toHaveLength(0);
+    expect(questionAnswers).toHaveLength(0);
+    expect(calls.edits.some((e) => e.messageId === 901 && e.text.includes("⏹"))).toBe(true);
+    expect(ctx.pendingForms.size).toBe(0);
+  });
+
+  test("skip button is offered when only session.form.cancel can skip", async () => {
+    const { ctx, calls } = mkContext();
+    ctx.client.question = {};
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_1" };
+      },
+      form: {
+        async reply() {
+          return undefined;
+        },
+        async cancel() {
+          return undefined;
+        },
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("f11", "form.created", singleSelectForm()));
+    expect(calls.sent).toHaveLength(1);
+    const buttons = calls.sent[0].buttons as { callback_data: string }[][];
+    expect(buttons.flat().map((b) => b.callback_data)).toEqual(["q:0", "q:1", "qskip"]);
+  });
+
+  test("tap qskip rejects through question.reject on older hosts", async () => {
     const { ctx, calls, questionRejects, questionAnswers } = withPendingForm();
     await dispatch(ctx, cbUpdate(901, "qskip"));
     expect(questionRejects).toEqual([{ requestID: "frm_1" }]);

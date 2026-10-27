@@ -332,9 +332,9 @@ async function reportOutcome(
 }
 
 /**
- * Settle a pending question from an explicit tap: reply through
- * question.reply ({@link replyQuestion}), close the message, and fall back to
- * the "answered elsewhere" wording when the request was settled in the
+ * Settle a pending question from an explicit tap: reply through the active
+ * form/question surface ({@link replyQuestion}), close the message, and fall
+ * back to the "answered elsewhere" wording when the request was settled in the
  * meantime. Tap-only: the initial message is never a source of answers.
  */
 async function answerForm(
@@ -346,7 +346,14 @@ async function answerForm(
 ): Promise<void> {
   const lang = ctx.config.language;
   try {
-    await replyQuestion(ctx, formEntry.formID, formEntry.sessionID, formEntry.fieldKey, choice);
+    await replyQuestion(
+      ctx,
+      formEntry.formID,
+      formEntry.sessionID,
+      formEntry.fieldKey,
+      formEntry.fieldType,
+      choice
+    );
     ctx.pendingForms.delete(messageId);
     const text = choice === null ? DONE_SKIPPED[lang] : DONE_ANSWERED[lang];
     await reportOutcome(ctx, messageId, callbackId, text);

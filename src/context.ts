@@ -21,17 +21,21 @@ export interface PendingPermission {
   action: string;
 }
 
-/** One answer choice of a single-select question. */
+/** One answer choice of a choice question. */
 export interface FormChoice {
   value: string;
   label: string;
 }
 
-/** A pending single-select question rendered as tap buttons. */
+/** Form field types that can be rendered as tap choices. */
+export type ChoiceFieldType = "string" | "multiselect";
+
+/** A pending question with one choice field rendered as tap buttons. */
 export interface PendingForm {
   formID: string;
   sessionID: string;
   fieldKey: string;
+  fieldType: ChoiceFieldType;
   options: FormChoice[];
 }
 
@@ -49,7 +53,7 @@ export interface AppContext {
   sessionDirs: Map<string, string>;
   /** Telegram message id -> pending permission (callback routing). */
   pending: Map<number, PendingPermission>;
-  /** Telegram message id -> pending single-select question (callback routing). */
+  /** Telegram message id -> pending choice question (callback routing). */
   pendingForms: Map<number, PendingForm>;
   /** permission request id -> telegram message id (close notifications). */
   permMsgs: Map<string, number>;
@@ -152,9 +156,13 @@ export function hasQuestionReplySurface(ctx: AppContext): boolean {
   );
 }
 
-/** Check if any question reject surface is available. */
-export function hasQuestionRejectSurface(ctx: AppContext): boolean {
-  return !!(ctx.client.question?.reject || ctx.client.session?.question?.reject);
+/** Check if any question skip surface is available. */
+export function hasQuestionSkipSurface(ctx: AppContext): boolean {
+  return !!(
+    ctx.client.session?.form?.cancel ||
+    ctx.client.question?.reject ||
+    ctx.client.session?.question?.reject
+  );
 }
 
 /** Log the full error details for debugging permission/form replies. */
@@ -207,18 +215,24 @@ async function replyWithQuestionSurface(
  *
  * Preference order: official `session.form.reply` with the field key and
  * machine value, then the legacy global/scoped `question.reply` with labels.
- * `null` means "skip" and uses `question.reject`. A missing surface throws.
+ * `null` means "skip": use `session.form.cancel` first, then `question.reject`.
+ * A missing surface throws.
  */
 export async function replyQuestion(
   ctx: AppContext,
   formID: string,
   sessionID: string,
   fieldKey: string,
+  fieldType: ChoiceFieldType,
   choice: FormChoice | null
 ): Promise<void> {
   if (choice === null) {
-    // Skip needs a reject surface; prefer the first surface that has one
-    // instead of assuming the global surface exposes the full API.
+    const form = ctx.client.session?.form;
+    if (form?.cancel) {
+      await form.cancel({ sessionID, formID });
+      return;
+    }
+    // Older hosts only expose the legacy question surfaces.
     const surface = [questionSurface(ctx), questionSurface(ctx, true)].find((s) => s?.reject);
     if (!surface?.reject) throw new Error("question reject surface not available");
     await surface.reject({ requestID: formID, sessionID });
@@ -227,7 +241,8 @@ export async function replyQuestion(
 
   const form = ctx.client.session?.form;
   if (form?.reply) {
-    const answer: FormAnswer = { [fieldKey]: [choice.value] };
+    const answer: FormAnswer =
+      fieldType === "multiselect" ? { [fieldKey]: [choice.value] } : { [fieldKey]: choice.value };
     try {
       await form.reply({ sessionID, formID, answer });
       return;

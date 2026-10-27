@@ -4,8 +4,9 @@
  * Maps opencode v2 events to Telegram notifications:
  *   permission.asked            → 🔐 message + tap-only buttons
  *   permission.replied          → close the notification ("answered")
- *   form.created                → ❓ question: tap buttons for single-select
- *                                 forms (answer/reject via question.reply),
+ *   form.created                → ❓ question: tap buttons for one choice field
+ *                                 (answer via form/question reply, skip via
+ *                                 form cancel/question reject),
  *                                 notify-only otherwise
  *   form.replied / cancelled    → close the question message
  *   session.execution.succeeded → ✅ completed (debounced)
@@ -22,9 +23,10 @@
 import { resolve as resolvePath } from "node:path";
 import {
   type AppContext,
+  type ChoiceFieldType,
   type FormChoice,
-  hasQuestionRejectSurface,
   hasQuestionReplySurface,
+  hasQuestionSkipSurface,
   listPendingQuestions,
   sessionInfo,
 } from "./context.ts";
@@ -282,20 +284,23 @@ export function createRouter(
   }
 
   /**
-   * The tap-answerable surface covers single-select questions only: exactly
-   * one field with 2..5 options. Everything else stays notify-only; the
-   * message then points back to the terminal (formatQuestion plain mode).
+   * The tap-answerable surface covers one choice field with 2..5 options.
+   * String fields send the selected value; multiselect fields send a one-item
+   * array. Everything else stays notify-only; the message then points back to
+   * the terminal (formatQuestion plain mode).
    */
   function singleQuestionChoices(
     form: FormCreatedData["form"]
-  ): { fieldKey: string; choices: FormChoice[] } | undefined {
+  ): { fieldKey: string; fieldType: ChoiceFieldType; choices: FormChoice[] } | undefined {
     const fields = form.fields ?? [];
     if (fields.length !== 1) return undefined;
     const field = fields[0];
     const options = field?.options ?? [];
-    if (!field || options.length < 2 || options.length > 5) return undefined;
+    if (!field || (field.type !== "string" && field.type !== "multiselect")) return undefined;
+    if (options.length < 2 || options.length > 5) return undefined;
     return {
       fieldKey: field.key,
+      fieldType: field.type,
       choices: options.map((o) => ({ value: o.value, label: o.label || o.value })),
     };
   }
@@ -321,7 +326,7 @@ export function createRouter(
     const hasSurface = hasQuestionReplySurface(ctx);
     const buttons =
       question && canTap() && hasSurface
-        ? questionButtons(question.choices, hasQuestionRejectSurface(ctx))
+        ? questionButtons(question.choices, hasQuestionSkipSurface(ctx))
         : undefined;
     if (question && canTap() && !hasSurface) {
       ctx.log(`question surface not available for form ${form.id}, sending notify-only`);
@@ -337,6 +342,7 @@ export function createRouter(
           formID: form.id,
           sessionID: form.sessionID,
           fieldKey: question.fieldKey,
+          fieldType: question.fieldType,
           options: question.choices,
         });
         trimMap(ctx.pendingForms);
