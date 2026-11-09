@@ -27,7 +27,8 @@ const dummyToken = `123456:${"a".repeat(35)}`;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tg-smoke-"));
 const project = path.join(root, "project");
 // Minimal allowlist: never inherit Telegram, GitHub or npm credentials from the
-// caller. The smoke must prove the options path, not a credential fallback.
+// caller. Proxy/CA settings are forwarded because egress may need them; proxy
+// URLs can embed credentials, so diagnostics are redacted below.
 const env: NodeJS.ProcessEnv = {};
 for (const key of [
   "PATH",
@@ -97,19 +98,23 @@ const child = Bun.spawn({
   stderr: "pipe",
 });
 
+function redact(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***:***@");
+}
+
 function fail(message: string): never {
-  console.error(`FAIL: ${message}`);
+  console.error(`FAIL: ${redact(message)}`);
   const pluginLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8").trim() : "";
   if (pluginLog)
-    console.error(`plugin log (tail):\n${pluginLog.split("\n").slice(-10).join("\n")}`);
+    console.error(`plugin log (tail):\n${redact(pluginLog).split("\n").slice(-10).join("\n")}`);
   if (stdoutTail.trim()) {
     console.error(
-      `opencode stdout (tail):\n${stdoutTail.trim().split("\n").slice(-10).join("\n")}`
+      `opencode stdout (tail):\n${redact(stdoutTail).trim().split("\n").slice(-10).join("\n")}`
     );
   }
   if (stderrTail.trim()) {
     console.error(
-      `opencode stderr (tail):\n${stderrTail.trim().split("\n").slice(-10).join("\n")}`
+      `opencode stderr (tail):\n${redact(stderrTail).trim().split("\n").slice(-10).join("\n")}`
     );
   }
   process.exit(1);
