@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — compatibility watchdog automation and live smoke
+
+- `upstream-watch` now closes its own compatibility loop: it installs the
+  exact new OpenCode version, runs `bun run compat` (CI plus live smoke),
+  moves the `tested on X.Y.Z;` README anchor with a docs-only commit,
+  comments the evidence and closes the issue. A failed check leaves the
+  issue open for the next scheduled run; the anchor never moves backwards.
+- New `bun run smoke`: starts an ephemeral OpenCode host with a dummy
+  Telegram token, proves the options path through the poller lock, and
+  fails on configuration, event-subscription or poller startup errors.
+  The child environment is an allowlist, so Telegram, GitHub and npm
+  credentials are never inherited.
+
 ## 0.5.2 — packaging and discoverability only
 
 - No runtime changes: `src/` and `index.ts` are identical to 0.5.1.

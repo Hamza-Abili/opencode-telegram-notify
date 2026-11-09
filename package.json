@@ -54,7 +54,9 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "bun test",
-    "ci": "bun run lint && bun run typecheck && bun run test"
+    "ci": "bun run lint && bun run typecheck && bun run test",
+    "smoke": "bun scripts/smoke.ts",
+    "compat": "bun run ci && bun run smoke"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.6",

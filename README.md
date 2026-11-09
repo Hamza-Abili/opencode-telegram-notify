@@ -287,6 +287,8 @@ bun install     # dev only: typescript + @types/bun
 bun run ci      # lint + typecheck + tests
 bun run typecheck
 bun test
+bun run smoke   # live OpenCode host check (OPENCODE_BIN to override)
+bun run compat  # ci + smoke; used by upstream-watch before it moves the anchor
 ```
 
 ### Monitoring
