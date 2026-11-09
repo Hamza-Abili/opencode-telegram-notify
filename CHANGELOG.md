@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 — packaging and discoverability only
+
+- No runtime changes: `src/` and `index.ts` are identical to 0.5.1.
+- Added `homepage` and the `telegram-bot` keyword to `package.json`, and a
+  short cross-link section for the other plugins by the same author.
+
 ## 0.5.1 — question answers match the form schema
 
 - `session.form.reply` now sends a string for `string` fields and a one-item
