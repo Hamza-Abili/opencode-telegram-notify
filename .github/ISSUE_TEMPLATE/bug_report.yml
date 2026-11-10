@@ -1,0 +1,61 @@
+name: Bug report
+description: Notifications, questions, permissions or inline buttons do not work
+title: "bug: "
+labels: ["bug", "needs reproduction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste your bot token, a private chat id, or a full config file.
+        Redact the token as `123456:AA...` and the chat id as `123...`.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.5.2"
+    validations:
+      required: true
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version and generation
+      placeholder: "2.2.6 (V2)"
+    validations:
+      required: true
+  - type: dropdown
+    id: event
+    attributes:
+      label: Event
+      options:
+        - Permission prompt
+        - Question
+        - Idle / task complete
+        - Error
+        - Inline button callback
+        - Startup / configuration
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted options
+      description: Replace token and chat id. Do not paste the real values.
+      render: jsonc
+  - type: textarea
+    id: telegram
+    attributes:
+      label: Telegram API response
+      description: HTTP status and description, if available.
+      render: text
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true

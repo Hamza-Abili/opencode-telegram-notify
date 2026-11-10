@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/Hamza-Abili/opencode-telegram-notify/discussions
+    about: Ask for help with BotFather, chat ids, or a notification setup.
+  - name: Security report
+    url: https://github.com/Hamza-Abili/opencode-telegram-notify/security/advisories/new
+    about: Report a token leak, callback bypass or approval issue privately.
