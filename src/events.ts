@@ -21,6 +21,7 @@
  */
 
 import { resolve as resolvePath } from "node:path";
+import type { Language } from "./config.ts";
 import {
   type AppContext,
   type ChoiceFieldType,
@@ -31,18 +32,7 @@ import {
   sessionInfo,
 } from "./context.ts";
 import * as fmt from "./format.ts";
-import {
-  ANSWER_ALWAYS,
-  ANSWER_ONCE,
-  ANSWER_REJECT,
-  DONE_ALLOWED,
-  DONE_ANSWERED,
-  DONE_CANCELLED,
-  DONE_REJECTED,
-  decisionLabel,
-  QUESTION_SKIP,
-  tr,
-} from "./i18n.ts";
+import { decisionLabel, t } from "./i18n/index.ts";
 import type { InlineButton } from "./telegram.ts";
 import type {
   ExecutionData,
@@ -156,13 +146,13 @@ function dataSessionID(data: unknown): string | undefined {
   return typeof sid === "string" ? sid : undefined;
 }
 
-function permissionButtons(lang: "en" | "it"): InlineButton[][] {
+function permissionButtons(lang: Language): InlineButton[][] {
   return [
     [
-      { text: ANSWER_ONCE[lang], callback_data: "allow" },
-      { text: ANSWER_REJECT[lang], callback_data: "reject" },
+      { text: t(lang, "answerOnce"), callback_data: "allow" },
+      { text: t(lang, "answerReject"), callback_data: "reject" },
     ],
-    [{ text: ANSWER_ALWAYS[lang], callback_data: "always" }],
+    [{ text: t(lang, "answerAlways"), callback_data: "always" }],
   ];
 }
 
@@ -273,8 +263,8 @@ export function createRouter(
     try {
       const text =
         reply.reply === "reject"
-          ? DONE_REJECTED[cfg.language]
-          : tr(cfg.language, DONE_ALLOWED, {
+          ? t(cfg.language, "doneRejected")
+          : t(cfg.language, "doneAllowed", {
               decision: decisionLabel(cfg.language, reply.reply ?? "once"),
             });
       await ctx.telegram.editMessageText(messageId, fmt.escapeHtml(text));
@@ -309,7 +299,7 @@ export function createRouter(
     const rows: InlineButton[][] = choices.map((choice, i) => [
       { text: choice.label.slice(0, 60), callback_data: `q:${i}` },
     ]);
-    if (withSkip) rows.push([{ text: QUESTION_SKIP[cfg.language], callback_data: "qskip" }]);
+    if (withSkip) rows.push([{ text: t(cfg.language, "questionSkip"), callback_data: "qskip" }]);
     return rows;
   }
 
@@ -367,7 +357,7 @@ export function createRouter(
     ctx.formMsgs.delete(id);
     ctx.pendingForms.delete(messageId);
     try {
-      const text = cancelled ? DONE_CANCELLED[cfg.language] : DONE_ANSWERED[cfg.language];
+      const text = cancelled ? t(cfg.language, "doneCancelled") : t(cfg.language, "doneAnswered");
       await ctx.telegram.editMessageText(messageId, `<b>${fmt.escapeHtml(text)}</b>`);
     } catch (error) {
       ctx.logError(`question close edit failed: ${String(error)}`);

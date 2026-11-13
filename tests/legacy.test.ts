@@ -404,6 +404,7 @@ describe("v1 environment-driven config", () => {
   test("language falls back to TELEGRAM_LANGUAGE when options omit it", () => {
     expect(loadConfig({}, ENV).language).toBe("it");
     expect(loadConfig({}, { ...ENV, TELEGRAM_LANGUAGE: "en" }).language).toBe("en");
+    expect(loadConfig({}, { ...ENV, TELEGRAM_LANGUAGE: "zh-CN" }).language).toBe("zh");
     // Explicit options always win over the environment.
     expect(loadConfig({ language: "en" }, ENV).language).toBe("en");
   });

@@ -82,6 +82,14 @@ describe("dispatch — commands", () => {
     expect(text).not.toContain("token"); // placeholder only
   });
 
+  test("/setup localizes the env label", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { language: "zh" });
+    await dispatch(ctx, msgUpdate("/setup"));
+    const text = calls.sent[0].text;
+    expect(text).toContain("环境变量：");
+    expect(text).not.toContain("Env vars:");
+  });
+
   test("unknown command gets help, plain text is ignored", async () => {
     const { ctx, calls } = mkContext();
     await dispatch(ctx, msgUpdate("/frobnicate"));

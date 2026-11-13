@@ -1,7 +1,17 @@
 # Changelog
 
-## Unreleased — compatibility watchdog automation and live smoke
+## 0.6.0 — Simplified Chinese, per-locale catalogs, compatibility watchdog
 
+- Added Simplified Chinese (`zh`) notifications, including permission buttons,
+  lifecycle messages and all bot commands.
+  `language` now resolves BCP-47-style tags (`zh-CN`, `zh-Hans`, `it-IT`,
+  `en-US`, case-insensitive, `_` accepted) by primary language, accepts `cn`
+  as a `zh` alias, and falls back to `en` for unsupported tags.
+- Messages now live in one catalog per locale
+  (`src/i18n/{en,it,zh}.ts`) behind a typed `t()` helper. Adding a language is
+  one file plus one registry entry; the compiler and `tests/i18n.test.ts`
+  enforce key and placeholder parity.
+- Fixed the `/setup` reply leaving its `Env vars:` label untranslated.
 - `upstream-watch` now closes its own compatibility loop: it installs the
   exact new OpenCode version, runs `bun run compat` (CI plus live smoke),
   opens a docs-only pull request that moves the `tested on X.Y.Z;` README

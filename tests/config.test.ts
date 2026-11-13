@@ -1,5 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, expandEnv, loadConfig } from "../src/config.ts";
+import { ConfigError, expandEnv, loadConfig, parseLanguage } from "../src/config.ts";
+
+describe("parseLanguage", () => {
+  test("matches base language and normalizes BCP-47-style tags", () => {
+    expect(parseLanguage("en")).toBe("en");
+    expect(parseLanguage("EN-us")).toBe("en");
+    expect(parseLanguage("it-IT")).toBe("it");
+    expect(parseLanguage("it_IT")).toBe("it");
+    expect(parseLanguage("zh")).toBe("zh");
+    expect(parseLanguage("ZH_cn")).toBe("zh");
+    expect(parseLanguage("zh-Hans")).toBe("zh");
+    expect(parseLanguage("zh-Hans-CN")).toBe("zh");
+    expect(parseLanguage("zh-TW")).toBe("zh");
+    expect(parseLanguage("zh-Hant")).toBe("zh");
+    expect(parseLanguage("cn")).toBe("zh");
+  });
+
+  test("unknown or malformed tags fall back to en", () => {
+    expect(parseLanguage("fr")).toBe("en");
+    expect(parseLanguage("")).toBe("en");
+    expect(parseLanguage("   ")).toBe("en");
+    expect(parseLanguage(undefined)).toBe("en");
+    expect(parseLanguage(null)).toBe("en");
+    expect(parseLanguage(42)).toBe("en");
+    expect(parseLanguage("constructor")).toBe("en");
+    expect(parseLanguage("__proto__")).toBe("en");
+    expect(parseLanguage("toString")).toBe("en");
+  });
+});
 
 describe("expandEnv", () => {
   test("expands ${VAR} references", () => {
@@ -58,11 +86,38 @@ describe("loadConfig", () => {
     expect(b.telegram.allowedUserIds).toEqual(["3", "4"]);
   });
 
-  test("language it accepted, others fall back to en", () => {
-    const it = loadConfig({ ...base, language: "it" }, { T: "1:x", C: "1" });
+  test("language accepts tags and falls back to en", () => {
+    const it = loadConfig({ ...base, language: "it-IT" }, { T: "1:x", C: "1" });
     expect(it.language).toBe("it");
+    const zh = loadConfig({ ...base, language: "zh-CN" }, { T: "1:x", C: "1" });
+    expect(zh.language).toBe("zh");
     const defaulted = loadConfig({ ...base, language: "fr" }, { T: "1:x", C: "1" });
     expect(defaulted.language).toBe("en");
+  });
+
+  test("language option wins over TELEGRAM_LANGUAGE", () => {
+    const cfg = loadConfig(
+      { ...base, language: "zh-Hans" },
+      { T: "1:x", C: "1", TELEGRAM_LANGUAGE: "it" }
+    );
+    expect(cfg.language).toBe("zh");
+    const invalid = loadConfig(
+      { ...base, language: "fr" },
+      { T: "1:x", C: "1", TELEGRAM_LANGUAGE: "it" }
+    );
+    expect(invalid.language).toBe("en");
+  });
+
+  test("TELEGRAM_LANGUAGE is parsed when options omit language", () => {
+    const cfg = loadConfig(
+      {},
+      {
+        TELEGRAM_BOT_TOKEN: "1:x",
+        TELEGRAM_CHAT_ID: "1",
+        TELEGRAM_LANGUAGE: "zh-CN",
+      }
+    );
+    expect(cfg.language).toBe("zh");
   });
 
   test("numeric clamps stay within range", () => {

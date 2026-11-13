@@ -21,32 +21,7 @@ import path from "node:path";
 import type { AppContext, FormChoice, PendingForm } from "./context.ts";
 import { isSettledError, logReplyError, replyPermission, replyQuestion } from "./context.ts";
 import { escapeHtml } from "./format.ts";
-import {
-  ANSWERED_IN_TERMINAL,
-  COMMAND_HELP,
-  COMMAND_SETUP,
-  COMMAND_START,
-  COMMAND_STATUS,
-  COMMAND_STOP,
-  DONE_ALLOWED,
-  DONE_ANSWERED,
-  DONE_REJECTED,
-  DONE_SKIPPED,
-  decisionLabel,
-  EVENTS_LABEL,
-  EXPIRED_OR_STALE,
-  HELP,
-  PROJECT,
-  REPLY_FAILED_RETRY,
-  SHUTTING_DONE,
-  START,
-  STATUS_ACTIVE,
-  STATUS_INTERACTIVE,
-  STATUS_ONLINE,
-  STATUS_SILENCED,
-  STATUS_STANDBY,
-  tr,
-} from "./i18n.ts";
+import { decisionLabel, t } from "./i18n/index.ts";
 import { openPollerLock } from "./lock.ts";
 import type { TelegramUpdate } from "./telegram.ts";
 import { TelegramError } from "./telegram.ts";
@@ -173,12 +148,12 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
     switch (cmd) {
       case "/start": {
         ctx.silenced = false;
-        await ctx.telegram.sendMessage(tr(ctx.config.language, START, { chatId: String(chatId) }));
+        await ctx.telegram.sendMessage(t(ctx.config.language, "start", { chatId: String(chatId) }));
         return;
       }
       case "/stop": {
         ctx.silenced = true;
-        await ctx.telegram.sendMessage(SHUTTING_DONE[ctx.config.language], { silent: true });
+        await ctx.telegram.sendMessage(t(ctx.config.language, "shuttingDone"), { silent: true });
         return;
       }
       case "/status": {
@@ -192,11 +167,11 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
           .join(", ");
         const lang = ctx.config.language;
         const text = [
-          STATUS_ONLINE[lang],
-          `${PROJECT[lang]}: <b>${escapeHtml(ctx.project)}</b>`,
-          ctx.silenced ? STATUS_SILENCED[lang] : STATUS_ACTIVE[lang],
-          ctx.interactive ? STATUS_INTERACTIVE[lang] : STATUS_STANDBY[lang],
-          `${EVENTS_LABEL[lang]}: ${events}`,
+          t(lang, "statusOnline"),
+          `${t(lang, "project")}: <b>${escapeHtml(ctx.project)}</b>`,
+          ctx.silenced ? t(lang, "statusSilenced") : t(lang, "statusActive"),
+          ctx.interactive ? t(lang, "statusInteractive") : t(lang, "statusStandby"),
+          `${t(lang, "eventsLabel")}: ${events}`,
         ].join("\n");
         await ctx.telegram.sendMessage(text);
         return;
@@ -207,13 +182,13 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
           [
             "<b>opencode.jsonc</b>",
             snippet,
-            `Env vars: <code>TELEGRAM_BOT_TOKEN</code> · <code>TELEGRAM_CHAT_ID=${escapeHtml(ctx.config.telegram.chatId)}</code>`,
+            `${t(ctx.config.language, "envVars")} <code>TELEGRAM_BOT_TOKEN</code> · <code>TELEGRAM_CHAT_ID=${escapeHtml(ctx.config.telegram.chatId)}</code>`,
           ].join("\n")
         );
         return;
       }
       default: {
-        await ctx.telegram.sendMessage(HELP[ctx.config.language]);
+        await ctx.telegram.sendMessage(t(ctx.config.language, "help"));
         return;
       }
     }
@@ -270,7 +245,7 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
 
   const decision = DECISIONS[cb.data];
   if (!decision) {
-    await reportOutcome(ctx, undefined, cb.id, EXPIRED_OR_STALE[ctx.config.language]);
+    await reportOutcome(ctx, undefined, cb.id, t(ctx.config.language, "expiredOrStale"));
     return;
   }
 
@@ -280,19 +255,19 @@ async function handleCallback(ctx: AppContext, update: TelegramUpdate): Promise<
     ctx.pending.delete(messageId);
     const text =
       decision === "reject"
-        ? DONE_REJECTED[lang]
-        : tr(lang, DONE_ALLOWED, { decision: decisionLabel(lang, decision) });
+        ? t(lang, "doneRejected")
+        : t(lang, "doneAllowed", { decision: decisionLabel(lang, decision) });
     await reportOutcome(ctx, messageId, cb.id, text);
   } catch (error) {
     logReplyError(ctx, "permission reply", error);
     if (isSettledError(error)) {
       ctx.pending.delete(messageId);
-      await reportOutcome(ctx, messageId, cb.id, ANSWERED_IN_TERMINAL[lang]);
+      await reportOutcome(ctx, messageId, cb.id, t(lang, "answeredInTerminal"));
     } else {
       // Keep the pending entry and the message with its buttons: the user can
       // tap again after a transient network/server failure. Editing the body
       // here would remove the inline keyboard and the only interactive path.
-      await reportOutcome(ctx, undefined, cb.id, REPLY_FAILED_RETRY[lang]);
+      await reportOutcome(ctx, undefined, cb.id, t(lang, "replyFailedRetry"));
     }
   }
 }
@@ -303,7 +278,13 @@ async function staleCallbackAck(
   callbackId: string,
   messageId?: number
 ): Promise<void> {
-  await reportOutcome(ctx, messageId, callbackId, EXPIRED_OR_STALE[ctx.config.language], "italic");
+  await reportOutcome(
+    ctx,
+    messageId,
+    callbackId,
+    t(ctx.config.language, "expiredOrStale"),
+    "italic"
+  );
 }
 
 /**
@@ -355,17 +336,17 @@ async function answerForm(
       choice
     );
     ctx.pendingForms.delete(messageId);
-    const text = choice === null ? DONE_SKIPPED[lang] : DONE_ANSWERED[lang];
+    const text = choice === null ? t(lang, "doneSkipped") : t(lang, "doneAnswered");
     await reportOutcome(ctx, messageId, callbackId, text);
   } catch (error) {
     logReplyError(ctx, "question reply", error);
     if (isSettledError(error)) {
       ctx.pendingForms.delete(messageId);
-      await reportOutcome(ctx, messageId, callbackId, ANSWERED_IN_TERMINAL[lang]);
+      await reportOutcome(ctx, messageId, callbackId, t(lang, "answeredInTerminal"));
     } else {
       // Keep the pending entry and the message with its buttons so the tap can
       // be retried; an edit would strip the inline keyboard.
-      await reportOutcome(ctx, undefined, callbackId, REPLY_FAILED_RETRY[lang]);
+      await reportOutcome(ctx, undefined, callbackId, t(lang, "replyFailedRetry"));
     }
   }
 }
@@ -439,11 +420,11 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         try {
           const lang = ctx.config.language;
           await ctx.telegram.setMyCommands([
-            { command: "start", description: COMMAND_START[lang] },
-            { command: "status", description: COMMAND_STATUS[lang] },
-            { command: "setup", description: COMMAND_SETUP[lang] },
-            { command: "stop", description: COMMAND_STOP[lang] },
-            { command: "help", description: COMMAND_HELP[lang] },
+            { command: "start", description: t(lang, "commandStart") },
+            { command: "status", description: t(lang, "commandStatus") },
+            { command: "setup", description: t(lang, "commandSetup") },
+            { command: "stop", description: t(lang, "commandStop") },
+            { command: "help", description: t(lang, "commandHelp") },
           ]);
         } catch (error) {
           ctx.logError(`setMyCommands failed: ${String(error)}`);

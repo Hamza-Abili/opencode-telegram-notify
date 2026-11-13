@@ -5,7 +5,38 @@
  * secrets never have to live inside opencode.jsonc.
  */
 
-export type Language = "en" | "it";
+export const LANGUAGES = ["en", "it", "zh"] as const;
+export type Language = (typeof LANGUAGES)[number];
+export const DEFAULT_LANGUAGE: Language = "en";
+
+/** Non-standard but common shorthand; `cn` is a country code, not a language. */
+const LANGUAGE_ALIASES = new Map<string, Language>([["cn", "zh"]]);
+
+function isLanguage(value: string): value is Language {
+  return (LANGUAGES as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve a BCP-47-style language tag (`zh-CN`, `zh-Hans`, `it_IT`, `en-US`).
+ * Matching is case-insensitive and falls back to the primary subtag. Unknown
+ * tags use English so a config typo never disables notifications.
+ */
+export function parseLanguage(value: unknown): Language {
+  if (typeof value !== "string") return DEFAULT_LANGUAGE;
+
+  const tag = value.trim().toLowerCase().replace(/_/g, "-");
+  if (tag === "") return DEFAULT_LANGUAGE;
+  if (isLanguage(tag)) return tag;
+
+  // Full-tag aliases first so future region aliases (e.g. zh-tw -> zh-hant)
+  // can be added without changing the base-language path below.
+  const exactAlias = LANGUAGE_ALIASES.get(tag);
+  if (exactAlias) return exactAlias;
+
+  const primary = tag.split("-")[0];
+  if (isLanguage(primary)) return primary;
+  return LANGUAGE_ALIASES.get(primary) ?? DEFAULT_LANGUAGE;
+}
 
 export interface EventsConfig {
   permission: boolean;
@@ -120,10 +151,14 @@ export function loadConfig(
     );
   }
 
-  const language =
-    root.language === "it" || (!root.language && env.TELEGRAM_LANGUAGE?.trim() === "it")
-      ? "it"
-      : "en";
+  // A non-empty explicit string option wins even when unsupported:
+  // parseLanguage falls back to English rather than silently taking a
+  // different value from the env.
+  const configuredLanguage =
+    typeof root.language === "string" && root.language.trim() !== ""
+      ? root.language
+      : env.TELEGRAM_LANGUAGE;
+  const language = parseLanguage(configuredLanguage);
 
   return {
     telegram: {

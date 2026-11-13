@@ -19,6 +19,16 @@ describe("router", () => {
     expect(ctx.permMsgs.get("per_1")).toBe(901);
   });
 
+  test("permission.asked renders Chinese labels when language is zh", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { language: "zh" });
+    const router = createRouter(ctx);
+    await router.handle(env("e1", "permission.asked", permissionAsked("per_1")));
+    expect(calls.sent).toHaveLength(1);
+    expect(calls.sent[0].text).toContain("🔐 权限请求");
+    const buttons = calls.sent[0].buttons as { text: string }[][];
+    expect(buttons.flat().map((b) => b.text)).toEqual(["仅允许一次", "拒绝", "始终允许"]);
+  });
+
   test("interactions=false sends without buttons and points to the terminal", async () => {
     const { ctx, calls } = mkContext("/tmp/proj", { interactions: false });
     const router = createRouter(ctx);

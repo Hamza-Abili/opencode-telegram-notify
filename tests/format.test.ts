@@ -11,11 +11,7 @@ import {
   truncate,
   truncateHtml,
 } from "../src/format.ts";
-import {
-  ANSWER_IN_TERMINAL,
-  ANSWER_WITH_BUTTONS,
-  PERMISSION_ANSWER_IN_TERMINAL,
-} from "../src/i18n.ts";
+import { t } from "../src/i18n/index.ts";
 
 const ctx = {
   language: "en" as const,
@@ -80,7 +76,7 @@ describe("formatPermission", () => {
       ctx,
       "plain"
     );
-    expect(msg).toContain(PERMISSION_ANSWER_IN_TERMINAL.en);
+    expect(msg).toContain(t("en", "permissionAnswerInTerminal"));
   });
 });
 
@@ -111,7 +107,7 @@ describe("formatQuestion", () => {
     expect(msg).toContain("Deploy?");
     expect(msg).toContain("Which env?");
     expect(msg).toContain("• Production");
-    expect(msg).toContain(ANSWER_IN_TERMINAL.en);
+    expect(msg).toContain(t("en", "answerInTerminal"));
   });
 
   test("buttons mode swaps the terminal pointer for the tap pointer", () => {
@@ -127,8 +123,8 @@ describe("formatQuestion", () => {
       ctx,
       "buttons"
     );
-    expect(msg).toContain(ANSWER_WITH_BUTTONS.en);
-    expect(msg).not.toContain(ANSWER_IN_TERMINAL.en);
+    expect(msg).toContain(t("en", "answerWithButtons"));
+    expect(msg).not.toContain(t("en", "answerInTerminal"));
   });
 });
 
@@ -192,6 +188,23 @@ describe("usage formatting", () => {
     expect(withUsage).toContain("$0.042");
     const without = formatCompleted("ses_1", ctx);
     expect(without).not.toContain("⚡");
+  });
+
+  test("Chinese labels render when language is zh", () => {
+    const zhCtx = { ...ctx, language: "zh" as const };
+    const line = formatUsage(
+      { input: 12800, output: 3200, reasoning: 0, cache: { read: 0, write: 0 } },
+      0.042,
+      "zh"
+    );
+    expect(line).toBe("⚡ 12.8k 输入 · 3.2k 输出 · $0.042");
+    const msg = formatCompleted("ses_1", zhCtx, {
+      cost: 0.042,
+      tokens: { input: 12800, output: 3200, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    expect(msg).toContain("✅ 任务已完成");
+    expect(msg).toContain("输入");
+    expect(msg).toContain("输出");
   });
 });
 

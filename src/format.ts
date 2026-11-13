@@ -4,27 +4,7 @@
  */
 
 import type { Language } from "./config.ts";
-import {
-  ANSWER_IN_TERMINAL,
-  ANSWER_WITH_BUTTONS,
-  CANCELLED,
-  COMPLETED,
-  EMPTY,
-  FAILED,
-  LIMIT_BUDGET,
-  LIMIT_FREE,
-  LIMIT_MODEL_BUDGET,
-  LIMIT_QUOTA,
-  LIMIT_RATE,
-  PERMISSION,
-  PERMISSION_ANSWER_IN_TERMINAL,
-  PROJECT,
-  QUESTION,
-  SESSION,
-  USAGE_IN,
-  USAGE_LABEL,
-  USAGE_OUT,
-} from "./i18n.ts";
+import { t } from "./i18n/index.ts";
 import type { FormCreatedData, PermissionAskedData, TokenUsageInfo } from "./types.ts";
 
 const ELLIPSIS = "…";
@@ -109,9 +89,9 @@ export interface FormatContext {
 function header(title: string, ctx: FormatContext, sessionID?: string): string {
   const lines = [`<b>${title}</b>`];
   const who: string[] = [];
-  if (ctx.project) who.push(`${PROJECT[ctx.language]}: ${escapeHtml(ctx.project)}`);
+  if (ctx.project) who.push(`${t(ctx.language, "project")}: ${escapeHtml(ctx.project)}`);
   const st = sessionID ? ctx.sessionTitle?.(sessionID) : undefined;
-  if (st) who.push(`${SESSION[ctx.language]}: ${escapeHtml(truncate(st, 80))}`);
+  if (st) who.push(`${t(ctx.language, "session")}: ${escapeHtml(truncate(st, 80))}`);
   if (who.length > 0) lines.push(who.join(" · "));
   return lines.join("\n");
 }
@@ -122,12 +102,12 @@ export function formatPermission(
   ctx: FormatContext,
   mode: "plain" | "buttons" = "plain"
 ): string {
-  const head = header(PERMISSION[ctx.language], ctx, data.sessionID);
+  const head = header(t(ctx.language, "permission"), ctx, data.sessionID);
   const resources = ctx.hideCommands
     ? `<i>[${data.resources?.length ?? 0}]</i>`
     : bullets(data.resources ?? []);
   const body = [head, `<b>${escapeHtml(data.action)}</b>`, resources];
-  if (mode === "plain") body.push("", PERMISSION_ANSWER_IN_TERMINAL[ctx.language]);
+  if (mode === "plain") body.push("", t(ctx.language, "permissionAnswerInTerminal"));
   return truncateHtml(body.join("\n"), ctx.maxBody);
 }
 
@@ -138,7 +118,7 @@ export function formatQuestion(
   mode: "plain" | "buttons" = "plain"
 ): string {
   const form = data.form;
-  const head = header(QUESTION[ctx.language], ctx, form.sessionID);
+  const head = header(t(ctx.language, "question"), ctx, form.sessionID);
   const body = [head, `<b>${escapeHtml(truncate(form.title ?? "", 120))}</b>`];
   const fields = form.fields ?? [];
   for (const field of fields.slice(0, 5)) {
@@ -156,7 +136,7 @@ export function formatQuestion(
   if (fields.length > 5) body.push(`<i>+${fields.length - 5}</i>`);
   body.push("");
   body.push(
-    mode === "buttons" ? ANSWER_WITH_BUTTONS[ctx.language] : ANSWER_IN_TERMINAL[ctx.language]
+    mode === "buttons" ? t(ctx.language, "answerWithButtons") : t(ctx.language, "answerInTerminal")
   );
   return truncateHtml(body.join("\n"), ctx.maxBody);
 }
@@ -167,7 +147,7 @@ export function formatCompleted(
   ctx: FormatContext,
   info?: { cost?: number; tokens?: TokenUsageInfo }
 ): string {
-  const head = header(COMPLETED[ctx.language], ctx, sessionID);
+  const head = header(t(ctx.language, "completed"), ctx, sessionID);
   const usage = info ? formatUsage(info.tokens, info.cost, ctx.language) : undefined;
   return truncateHtml(usage ? `${head}\n${usage}` : head, ctx.maxBody);
 }
@@ -206,12 +186,12 @@ export function formatUsage(
   const output = Math.max(0, tokens?.output ?? 0) + Math.max(0, tokens?.reasoning ?? 0);
   const c = Math.max(0, cost ?? 0);
   if (input === 0 && output === 0 && c === 0) return undefined;
-  const label = USAGE_LABEL[lang];
+  const label = t(lang, "usageLabel");
   // A host that reports cost but no counters gets a cost-only line; the
   // in/out segments would be misleading zeros.
   const costStr = formatCost(c);
   if (!tokens && costStr !== "0") return `${label} $${costStr}`;
-  const line = `${label} ${compactTokens(input)} ${USAGE_IN[lang]} · ${compactTokens(output)} ${USAGE_OUT[lang]}`;
+  const line = `${label} ${compactTokens(input)} ${t(lang, "usageIn")} · ${compactTokens(output)} ${t(lang, "usageOut")}`;
   return costStr === "0" ? line : `${line} · $${costStr}`;
 }
 
@@ -223,15 +203,15 @@ export function formatUsage(
 function limitLabel(type: string, lang: Language): string | undefined {
   switch (type) {
     case "provider.free-limit":
-      return LIMIT_FREE[lang];
+      return t(lang, "limitFree");
     case "provider.quota":
-      return LIMIT_QUOTA[lang];
+      return t(lang, "limitQuota");
     case "provider.rate-limit":
-      return LIMIT_RATE[lang];
+      return t(lang, "limitRate");
     case "provider.budget-limit":
-      return LIMIT_BUDGET[lang];
+      return t(lang, "limitBudget");
     case "provider.model-budget-limit":
-      return LIMIT_MODEL_BUDGET[lang];
+      return t(lang, "limitModelBudget");
     default:
       return undefined;
   }
@@ -243,10 +223,10 @@ export function formatFailed(
 ): string {
   const label = error?.type ? limitLabel(error.type, ctx.language) : undefined;
   const kind = label ?? (error?.type ? ` <code>${escapeHtml(error.type)}</code>` : "");
-  const msg = error?.message ? escapeHtml(truncate(error.message, 400)) : EMPTY[ctx.language];
-  return truncateHtml([header(FAILED[ctx.language], ctx), kind, msg].join("\n"), ctx.maxBody);
+  const msg = error?.message ? escapeHtml(truncate(error.message, 400)) : t(ctx.language, "empty");
+  return truncateHtml([header(t(ctx.language, "failed"), ctx), kind, msg].join("\n"), ctx.maxBody);
 }
 
 export function formatCancelled(sessionID: string, ctx: FormatContext): string {
-  return truncateHtml(header(CANCELLED[ctx.language], ctx, sessionID), ctx.maxBody);
+  return truncateHtml(header(t(ctx.language, "cancelled"), ctx, sessionID), ctx.maxBody);
 }
