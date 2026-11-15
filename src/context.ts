@@ -49,6 +49,8 @@ export interface AppContext {
   project: string;
   /** Cache of session titles seen on the event stream. */
   sessionTitles: Map<string, string>;
+  /** Cache of session agent names, used by the `ignore.agents` matcher. */
+  sessionAgents: Map<string, string>;
   /** sessionID -> directory attribution index (for events without location). */
   sessionDirs: Map<string, string>;
   /** Telegram message id -> pending permission (callback routing). */
@@ -257,24 +259,27 @@ export async function replyQuestion(
 }
 
 /**
- * One `session.get` call for the completion path: warms the title cache and
- * returns the session's cumulative cost/token counters when the host reports
- * them (opencode v2 sessions do; v1 and minimal surfaces do not, and the
+ * One `session.get` call for the completion path: warms the title and agent
+ * caches and returns the session's cumulative cost/token counters when the host
+ * reports them (opencode v2 sessions do; v1 and minimal surfaces do not, and the
  * caller then simply omits the usage line).
  */
 export async function sessionInfo(
   ctx: AppContext,
   sessionID: string
-): Promise<{ title?: string; cost?: number; tokens?: TokenUsageInfo } | undefined> {
+): Promise<{ title?: string; agent?: string; cost?: number; tokens?: TokenUsageInfo } | undefined> {
   const get = ctx.client.session?.get;
   if (!get) return undefined;
   try {
     const info = await get({ sessionID });
     const title = typeof info?.title === "string" && info.title !== "" ? info.title : undefined;
     if (title) ctx.sessionTitles.set(sessionID, title);
+    const agent = typeof info?.agent === "string" && info.agent !== "" ? info.agent : undefined;
+    if (agent) ctx.sessionAgents.set(sessionID, agent);
     const tokens = info?.tokens;
     return {
       title,
+      agent,
       cost: typeof info?.cost === "number" && Number.isFinite(info.cost) ? info.cost : undefined,
       tokens:
         tokens && typeof tokens.input === "number" && typeof tokens.output === "number"

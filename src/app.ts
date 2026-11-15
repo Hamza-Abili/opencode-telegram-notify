@@ -75,6 +75,7 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
     root,
     project: basename(root) || "opencode",
     sessionTitles: new Map(),
+    sessionAgents: new Map(),
     sessionDirs: new Map(),
     pending: new Map(),
     pendingForms: new Map(),

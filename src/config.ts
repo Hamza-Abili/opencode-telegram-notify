@@ -52,10 +52,26 @@ export interface TelegramConfig {
   allowedUserIds: string[];
 }
 
+/**
+ * Sessions that never produce notifications.
+ *
+ * Background and automation runs (`opencode run --agent reviewer --title …`)
+ * show up on the same event stream as interactive work, so the only way to keep
+ * them out of the chat is to match the session: by title (case-insensitive
+ * substring, because hosts append suffixes) or by agent name (case-insensitive
+ * exact match, the stable identifier behind `opencode run --agent`).
+ */
+export interface IgnoreConfig {
+  titles: string[];
+  agents: string[];
+}
+
 export interface AppConfig {
   telegram: TelegramConfig;
   language: Language;
   events: EventsConfig;
+  /** Sessions whose notifications are dropped (background/automation runs). */
+  ignore: IgnoreConfig;
   /** Allow inline tap buttons (permissions). Notification-only when false. */
   interactions: boolean;
   /** Debounce window before an idle/completion notification fires (ms). */
@@ -159,6 +175,7 @@ export function loadConfig(
       ? root.language
       : env.TELEGRAM_LANGUAGE;
   const language = parseLanguage(configuredLanguage);
+  const ignore = (root.ignore ?? {}) as Record<string, unknown>;
 
   return {
     telegram: {
@@ -177,6 +194,10 @@ export function loadConfig(
       usage: asBool(events.usage, true),
     },
     interactions: asBool(root.interactions, true),
+    ignore: {
+      titles: asStringList(ignore.titles).map((v) => v.toLowerCase()),
+      agents: asStringList(ignore.agents).map((v) => v.toLowerCase()),
+    },
     idleDebounceMs: asNumber(root.idleDebounceMs, 60_000, 0, 600_000),
     idleCooldownMs: asNumber(root.idleCooldownMs, 600_000, 0, 3_600_000),
     maxMessageChars: asNumber(root.maxMessageChars, 3800, 500, 3900),

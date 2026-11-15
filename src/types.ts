@@ -16,6 +16,7 @@ export interface V2SessionInfo {
   slug?: string;
   projectID?: string;
   parentID?: string;
+  agent?: string;
   directory?: string;
   location?: { directory?: string };
   time?: { created?: number; updated?: number };

@@ -199,6 +199,52 @@ export function createRouter(
     return attributed === ctx.root;
   }
 
+  /** Why this session is ignored, or undefined when it should notify. */
+  function ignoredReason(sessionID: string): string | undefined {
+    const title = ctx.sessionTitles.get(sessionID);
+    if (title) {
+      const haystack = title.toLowerCase();
+      const hit = cfg.ignore.titles.find((needle) => haystack.includes(needle.toLowerCase()));
+      if (hit) return `title "${title}" matches "${hit}"`;
+    }
+    const agent = ctx.sessionAgents.get(sessionID);
+    if (agent && cfg.ignore.agents.some((needle) => agent.toLowerCase() === needle.toLowerCase())) {
+      return `agent "${agent}" is ignored`;
+    }
+    return undefined;
+  }
+
+  /**
+   * Session-level mute for background/automation runs.
+   *
+   * A muted session produces no completion, failure, permission or question
+   * message, so a headless reviewer can never wait on an answer that will not
+   * come. Titles match as case-insensitive substrings (hosts append suffixes),
+   * agents as case-insensitive exact names.
+   *
+   * The caches are filled by `session.created`; a session that started before
+   * the plugin (re)loaded is looked up once, so the first event of the run is
+   * already covered.
+   */
+  async function muted(sessionID: string | undefined): Promise<boolean> {
+    if (!sessionID) return false;
+    const { titles, agents } = cfg.ignore;
+    if (titles.length === 0 && agents.length === 0) return false;
+    let reason = ignoredReason(sessionID);
+    if (reason === undefined) {
+      const needsLookup =
+        (titles.length > 0 && !ctx.sessionTitles.has(sessionID)) ||
+        (agents.length > 0 && !ctx.sessionAgents.has(sessionID));
+      if (needsLookup) {
+        await sessionInfo(ctx, sessionID);
+        reason = ignoredReason(sessionID);
+      }
+    }
+    if (reason === undefined) return false;
+    ctx.log(`ignoring session ${sessionID}: ${reason}`);
+    return true;
+  }
+
   function formSessionID(data: unknown): string | undefined {
     if (!data || typeof data !== "object") return undefined;
     const form = (data as { form?: { sessionID?: unknown } }).form?.sessionID;
@@ -229,6 +275,7 @@ export function createRouter(
     const req = data as PermissionAskedData;
     if (!req || typeof req.id !== "string") return;
     if (ctx.permMsgs.has(req.id)) return;
+    if (await muted(req.sessionID)) return;
     // Register before the network call so a fast reply/restart cannot race a
     // duplicate notification; -1 means "send in flight / not tap-answerable".
     ctx.permMsgs.set(req.id, -1);
@@ -309,6 +356,7 @@ export function createRouter(
     const form = created?.form;
     if (!form || typeof form.id !== "string") return;
     if (ctx.formMsgs.has(form.id)) return; // already notified (restart recovery dedupe)
+    if (await muted(form.sessionID)) return;
     // Register synchronously so a live form.created racing the recovery
     // startup window cannot duplicate the notification either.
     ctx.formMsgs.set(form.id, -1);
@@ -372,6 +420,9 @@ export function createRouter(
       state.idleTimers.delete(sessionID);
       // Settings can change while the timer is pending (/stop).
       if (ctx.silenced || !cfg.events.idle) return;
+      // A rename or agent switch inside the debounce window must not leak a
+      // notification for a session that is ignored now.
+      if (await muted(sessionID)) return;
       // Interactive sessions pause often; at most one completion notification
       // per idleCooldownMs, so conversational pauses do not spam the chat.
       const last = state.idleSentAt.get(sessionID) ?? 0;
@@ -417,6 +468,10 @@ export function createRouter(
               ctx.sessionTitles.set(d.sessionID, title);
               trimMap(ctx.sessionTitles);
             }
+            if (d.agent) {
+              ctx.sessionAgents.set(d.sessionID, d.agent);
+              trimMap(ctx.sessionAgents);
+            }
           }
           return;
         }
@@ -436,6 +491,7 @@ export function createRouter(
           state.children.delete(sid);
           state.idleSentAt.delete(sid);
           ctx.sessionTitles.delete(sid);
+          ctx.sessionAgents.delete(sid);
           ctx.sessionDirs.delete(sid);
           for (const [messageId, pending] of ctx.pending) {
             if (pending.sessionID === sid) ctx.pending.delete(messageId);
@@ -457,12 +513,16 @@ export function createRouter(
           return await closeQuestion(data, true);
         case "session.execution.succeeded": {
           const d = data as ExecutionData;
-          if (d?.sessionID) scheduleIdle(d.sessionID);
+          if (d?.sessionID) {
+            if (await muted(d.sessionID)) return;
+            scheduleIdle(d.sessionID);
+          }
           return;
         }
         case "session.execution.failed": {
           const d = data as ExecutionData;
           if (!d?.sessionID || ctx.silenced || !cfg.events.error) return;
+          if (await muted(d.sessionID)) return;
           cancelIdle(d.sessionID);
           await ctx.telegram
             .sendMessage(fmt.formatFailed(d.error, fctx))
@@ -472,6 +532,7 @@ export function createRouter(
         case "session.execution.interrupted": {
           const d = data as ExecutionData;
           if (!d?.sessionID || ctx.silenced || !cfg.events.error) return;
+          if (await muted(d.sessionID)) return;
           cancelIdle(d.sessionID);
           await ctx.telegram
             .sendMessage(fmt.formatCancelled(d.sessionID, fctx), { silent: true })
