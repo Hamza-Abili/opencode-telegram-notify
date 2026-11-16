@@ -139,6 +139,13 @@ export interface SessionCreatedData {
   agent?: string;
 }
 
+/** data payload of `session.agent.selected` (opencode v2.3+). */
+export interface SessionAgentSelectedData {
+  sessionID: string;
+  agent?: string;
+  previous?: string;
+}
+
 /* --------------------------------- client -------------------------------- */
 
 export type PermissionReplyField = "decision" | "reply";

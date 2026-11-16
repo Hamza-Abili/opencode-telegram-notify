@@ -123,6 +123,7 @@ export function mkContext(
     project: "proj",
     sessionTitles: new Map(),
     sessionAgents: new Map(),
+    sessionLookups: new Set(),
     sessionDirs: new Map(),
     pending: new Map(),
     pendingForms: new Map(),

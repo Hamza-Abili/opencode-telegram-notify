@@ -75,6 +75,23 @@ describe("loadConfig", () => {
     expect(cfg.ignore).toEqual({ titles: [], agents: [] });
   });
 
+  test("ignore string values split on commas, so multi-word titles stay whole", () => {
+    const cfg = loadConfig(
+      { ...base, ignore: { titles: "autolearn review, nightly sweep", agents: " Reviewer " } },
+      { T: "1:token", C: "42" }
+    );
+    expect(cfg.ignore.titles).toEqual(["autolearn review", "nightly sweep"]);
+    expect(cfg.ignore.agents).toEqual(["reviewer"]);
+  });
+
+  test("ignore drops blank needles instead of muting everything", () => {
+    const cfg = loadConfig(
+      { ...base, ignore: { titles: ["", "  ", "nightly"], agents: [] } },
+      { T: "1:token", C: "42" }
+    );
+    expect(cfg.ignore.titles).toEqual(["nightly"]);
+  });
+
   test("flat env fallback works", () => {
     const cfg = loadConfig({}, { TELEGRAM_BOT_TOKEN: "2:tok", TELEGRAM_CHAT_ID: "+7" });
     expect(cfg.telegram.botToken).toBe("2:tok");

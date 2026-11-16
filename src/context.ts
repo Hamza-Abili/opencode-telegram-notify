@@ -39,6 +39,26 @@ export interface PendingForm {
   options: FormChoice[];
 }
 
+/** Upper bound for the session caches; oldest entries are evicted first. */
+export const CACHE_MAX = 500;
+
+/** Drop oldest insertion-order entries so long-lived hosts stay bounded. */
+export function trimMap<K, V>(map: Map<K, V>, max = CACHE_MAX): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) return;
+    map.delete(oldest);
+  }
+}
+
+export function trimSet<T>(set: Set<T>, max = CACHE_MAX): void {
+  while (set.size > max) {
+    const oldest = set.values().next().value;
+    if (oldest === undefined) return;
+    set.delete(oldest);
+  }
+}
+
 export interface AppContext {
   config: AppConfig;
   client: V2Client;
@@ -51,6 +71,12 @@ export interface AppContext {
   sessionTitles: Map<string, string>;
   /** Cache of session agent names, used by the `ignore.agents` matcher. */
   sessionAgents: Map<string, string>;
+  /**
+   * SessionIDs whose `session.get` lookup already succeeded. A host may report
+   * no title or no agent at all, so the caches cannot tell "not known yet" from
+   * "asked and absent"; this set keeps the mute matcher from asking again.
+   */
+  sessionLookups: Set<string>;
   /** sessionID -> directory attribution index (for events without location). */
   sessionDirs: Map<string, string>;
   /** Telegram message id -> pending permission (callback routing). */
@@ -259,27 +285,34 @@ export async function replyQuestion(
 }
 
 /**
- * One `session.get` call for the completion path: warms the title and agent
- * caches and returns the session's cumulative cost/token counters when the host
- * reports them (opencode v2 sessions do; v1 and minimal surfaces do not, and the
- * caller then simply omits the usage line).
+ * One `session.get` call: warms the title and agent caches (used by the mute
+ * matcher) and returns the session's cumulative cost/token counters when the
+ * host reports them (opencode v2 sessions do; v1 and minimal surfaces do not,
+ * and the caller then simply omits the usage line).
  */
 export async function sessionInfo(
   ctx: AppContext,
   sessionID: string
-): Promise<{ title?: string; agent?: string; cost?: number; tokens?: TokenUsageInfo } | undefined> {
+): Promise<{ title?: string; cost?: number; tokens?: TokenUsageInfo } | undefined> {
   const get = ctx.client.session?.get;
   if (!get) return undefined;
   try {
     const info = await get({ sessionID });
     const title = typeof info?.title === "string" && info.title !== "" ? info.title : undefined;
-    if (title) ctx.sessionTitles.set(sessionID, title);
+    // A `session.created` / `session.renamed` / `session.agent.selected` event
+    // that landed while this lookup was in flight is newer than the snapshot,
+    // so it must win: only fill gaps, never overwrite.
+    if (title && !ctx.sessionTitles.has(sessionID)) ctx.sessionTitles.set(sessionID, title);
     const agent = typeof info?.agent === "string" && info.agent !== "" ? info.agent : undefined;
-    if (agent) ctx.sessionAgents.set(sessionID, agent);
+    if (agent && !ctx.sessionAgents.has(sessionID)) ctx.sessionAgents.set(sessionID, agent);
+    // Remember the lookup even when the host reports neither field: the mute
+    // matcher must not retry it on every later event. Failed calls are not
+    // recorded, so a transient error is retried.
+    ctx.sessionLookups.add(sessionID);
+    trimSet(ctx.sessionLookups);
     const tokens = info?.tokens;
     return {
       title,
-      agent,
       cost: typeof info?.cost === "number" && Number.isFinite(info.cost) ? info.cost : undefined,
       tokens:
         tokens && typeof tokens.input === "number" && typeof tokens.output === "number"

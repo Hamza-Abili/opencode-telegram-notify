@@ -30,6 +30,8 @@ import {
   hasQuestionSkipSurface,
   listPendingQuestions,
   sessionInfo,
+  trimMap,
+  trimSet,
 } from "./context.ts";
 import * as fmt from "./format.ts";
 import { decisionLabel, t } from "./i18n/index.ts";
@@ -41,6 +43,7 @@ import type {
   FormRepliedData,
   PermissionAskedData,
   PermissionRepliedData,
+  SessionAgentSelectedData,
   SessionCreatedData,
   SessionDeletedData,
   V2EventEnvelope,
@@ -48,24 +51,6 @@ import type {
 
 const SEEN_SYMBOL = Symbol.for("opencode-telegram-notify/seen-events");
 const SEEN_MAX = 2000;
-const CACHE_MAX = 500;
-
-/** Drop oldest insertion-order entries so long-lived hosts stay bounded. */
-function trimMap<K, V>(map: Map<K, V>, max = CACHE_MAX): void {
-  while (map.size > max) {
-    const oldest = map.keys().next().value;
-    if (oldest === undefined) return;
-    map.delete(oldest);
-  }
-}
-
-function trimSet<T>(set: Set<T>, max = CACHE_MAX): void {
-  while (set.size > max) {
-    const oldest = set.values().next().value;
-    if (oldest === undefined) return;
-    set.delete(oldest);
-  }
-}
 
 /** Process-level seen-event registry; survives plugin reloads in one process. */
 function seenSet(): Set<string> {
@@ -173,6 +158,15 @@ export function createRouter(
 
   const cfg = ctx.config;
   const canTap = () => cfg.interactions && ctx.interactive;
+  // Lowercased once: matching happens on every notify-worthy event. Empty
+  // needles are dropped because `"".includes("")` would mute everything.
+  const ignoreTitles = cfg.ignore.titles
+    .map((needle) => needle.toLowerCase())
+    .filter((needle) => needle !== "");
+  const ignoreAgents = cfg.ignore.agents
+    .map((needle) => needle.toLowerCase())
+    .filter((needle) => needle !== "");
+  const ignoreActive = ignoreTitles.length > 0 || ignoreAgents.length > 0;
   const fctx = {
     language: cfg.language,
     hideCommands: cfg.hideCommands,
@@ -204,41 +198,50 @@ export function createRouter(
     const title = ctx.sessionTitles.get(sessionID);
     if (title) {
       const haystack = title.toLowerCase();
-      const hit = cfg.ignore.titles.find((needle) => haystack.includes(needle.toLowerCase()));
+      const hit = ignoreTitles.find((needle) => haystack.includes(needle));
       if (hit) return `title "${title}" matches "${hit}"`;
     }
     const agent = ctx.sessionAgents.get(sessionID);
-    if (agent && cfg.ignore.agents.some((needle) => agent.toLowerCase() === needle.toLowerCase())) {
-      return `agent "${agent}" is ignored`;
-    }
+    if (agent && ignoreAgents.includes(agent.toLowerCase())) return `agent "${agent}" is ignored`;
     return undefined;
+  }
+
+  /**
+   * Whether a `session.get` is worth one round trip: only when a configured
+   * selector is still missing and this session was never looked up. A host that
+   * reports no agent leaves the cache empty forever, so the attempt itself has
+   * to be remembered.
+   */
+  function needsLookup(sessionID: string): boolean {
+    if (ctx.sessionLookups.has(sessionID) || !ctx.client.session?.get) return false;
+    return (
+      (ignoreTitles.length > 0 && !ctx.sessionTitles.has(sessionID)) ||
+      (ignoreAgents.length > 0 && !ctx.sessionAgents.has(sessionID))
+    );
   }
 
   /**
    * Session-level mute for background/automation runs.
    *
    * A muted session produces no completion, failure, permission or question
-   * message, so a headless reviewer can never wait on an answer that will not
-   * come. Titles match as case-insensitive substrings (hosts append suffixes),
-   * agents as case-insensitive exact names.
+   * message, so the chat stays quiet while nobody is at the terminal. Titles
+   * match as case-insensitive substrings (hosts append suffixes), agents as
+   * case-insensitive exact names.
+   *
+   * Muting only suppresses the message: the permission or question itself is
+   * untouched, so the run behaves exactly as if the plugin were not installed.
    *
    * The caches are filled by `session.created`; a session that started before
-   * the plugin (re)loaded is looked up once, so the first event of the run is
-   * already covered.
+   * the plugin (re)loaded is resolved through `session.get` on its first event,
+   * and the successful lookup is remembered so a host that reports no agent
+   * does not get asked again for every later event.
    */
   async function muted(sessionID: string | undefined): Promise<boolean> {
-    if (!sessionID) return false;
-    const { titles, agents } = cfg.ignore;
-    if (titles.length === 0 && agents.length === 0) return false;
+    if (!sessionID || !ignoreActive) return false;
     let reason = ignoredReason(sessionID);
-    if (reason === undefined) {
-      const needsLookup =
-        (titles.length > 0 && !ctx.sessionTitles.has(sessionID)) ||
-        (agents.length > 0 && !ctx.sessionAgents.has(sessionID));
-      if (needsLookup) {
-        await sessionInfo(ctx, sessionID);
-        reason = ignoredReason(sessionID);
-      }
+    if (reason === undefined && needsLookup(sessionID)) {
+      await sessionInfo(ctx, sessionID);
+      reason = ignoredReason(sessionID);
     }
     if (reason === undefined) return false;
     ctx.log(`ignoring session ${sessionID}: ${reason}`);
@@ -276,6 +279,8 @@ export function createRouter(
     if (!req || typeof req.id !== "string") return;
     if (ctx.permMsgs.has(req.id)) return;
     if (await muted(req.sessionID)) return;
+    // /stop may have run while the mute lookup was in flight.
+    if (ctx.silenced) return;
     // Register before the network call so a fast reply/restart cannot race a
     // duplicate notification; -1 means "send in flight / not tap-answerable".
     ctx.permMsgs.set(req.id, -1);
@@ -357,6 +362,8 @@ export function createRouter(
     if (!form || typeof form.id !== "string") return;
     if (ctx.formMsgs.has(form.id)) return; // already notified (restart recovery dedupe)
     if (await muted(form.sessionID)) return;
+    // /stop may have run while the mute lookup was in flight.
+    if (ctx.silenced) return;
     // Register synchronously so a live form.created racing the recovery
     // startup window cannot duplicate the notification either.
     ctx.formMsgs.set(form.id, -1);
@@ -416,31 +423,47 @@ export function createRouter(
     if (ctx.silenced || !cfg.events.idle) return;
     if (state.children.has(sessionID)) return; // subagent noise
     cancelIdle(sessionID);
-    const t = setTimeout(async () => {
-      state.idleTimers.delete(sessionID);
-      // Settings can change while the timer is pending (/stop).
-      if (ctx.silenced || !cfg.events.idle) return;
-      // A rename or agent switch inside the debounce window must not leak a
-      // notification for a session that is ignored now.
-      if (await muted(sessionID)) return;
-      // Interactive sessions pause often; at most one completion notification
-      // per idleCooldownMs, so conversational pauses do not spam the chat.
-      const last = state.idleSentAt.get(sessionID) ?? 0;
-      if (Date.now() - last < cfg.idleCooldownMs) return;
-      state.idleSentAt.set(sessionID, Date.now());
-      trimMap(state.idleSentAt);
-      // One lookup warms the title cache (header "Session: …") and, when the
-      // host reports them, the cumulative cost/token counters for the usage
-      // line; the project name stays as the fallback header.
-      const info = await sessionInfo(ctx, sessionID);
-      void ctx.telegram
-        .sendMessage(fmt.formatCompleted(sessionID, fctx, cfg.events.usage ? info : undefined))
-        .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));
+    // The timer stays in the map until it finishes, so cancelIdle() during one
+    // of the awaits below invalidates the pending send instead of losing the
+    // handle and letting a stale (or duplicate) completion through.
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const current = () => handle !== undefined && state.idleTimers.get(sessionID) === handle;
+    handle = setTimeout(async () => {
+      try {
+        if (!current()) return;
+        // Settings can change while the timer is pending (/stop).
+        if (ctx.silenced || !cfg.events.idle) return;
+        // A rename or agent switch inside the debounce window must not leak a
+        // notification for a session that is ignored now.
+        if (await muted(sessionID)) return;
+        if (!current()) return;
+        // Interactive sessions pause often; at most one completion notification
+        // per idleCooldownMs, so conversational pauses do not spam the chat.
+        const last = state.idleSentAt.get(sessionID) ?? 0;
+        if (Date.now() - last < cfg.idleCooldownMs) return;
+        // One lookup warms the title cache (header "Session: …") and, when the
+        // host reports them, the cumulative cost/token counters for the usage
+        // line; the project name stays as the fallback header.
+        const info = await sessionInfo(ctx, sessionID);
+        // A new run (or a mute) landed during the lookup: drop this one.
+        if (!current()) return;
+        // A rename or agent switch may also have landed during that lookup.
+        if (await muted(sessionID)) return;
+        state.idleSentAt.set(sessionID, Date.now());
+        trimMap(state.idleSentAt);
+        void ctx.telegram
+          .sendMessage(fmt.formatCompleted(sessionID, fctx, cfg.events.usage ? info : undefined))
+          .catch((error) => ctx.logError(`completed notify failed: ${String(error)}`));
+      } catch (error) {
+        ctx.logError(`completed notify failed: ${String(error)}`);
+      } finally {
+        if (current()) state.idleTimers.delete(sessionID);
+      }
     }, cfg.idleDebounceMs);
     // Never keep a server process alive only because a completion notification
     // is pending (matters for plugin hosts without a dispose chain, i.e. v1).
-    (t as unknown as { unref?: () => void }).unref?.();
-    state.idleTimers.set(sessionID, t);
+    (handle as unknown as { unref?: () => void }).unref?.();
+    state.idleTimers.set(sessionID, handle);
   }
 
   async function handle(envelope: V2EventEnvelope): Promise<void> {
@@ -483,6 +506,20 @@ export function createRouter(
           }
           return;
         }
+        case "session.agent.selected": {
+          const d = data as SessionAgentSelectedData;
+          if (typeof d?.sessionID !== "string") return;
+          if (typeof d.agent === "string" && d.agent !== "") {
+            ctx.sessionAgents.set(d.sessionID, d.agent);
+            trimMap(ctx.sessionAgents);
+          } else {
+            // Agent-less switch: drop the stale value and allow one fresh
+            // lookup instead of keeping the old agent forever.
+            ctx.sessionAgents.delete(d.sessionID);
+            ctx.sessionLookups.delete(d.sessionID);
+          }
+          return;
+        }
         case "session.deleted": {
           const d = data as SessionDeletedData;
           const sid = typeof d?.sessionID === "string" ? d.sessionID : undefined;
@@ -492,6 +529,7 @@ export function createRouter(
           state.idleSentAt.delete(sid);
           ctx.sessionTitles.delete(sid);
           ctx.sessionAgents.delete(sid);
+          ctx.sessionLookups.delete(sid);
           ctx.sessionDirs.delete(sid);
           for (const [messageId, pending] of ctx.pending) {
             if (pending.sessionID === sid) ctx.pending.delete(messageId);
@@ -513,17 +551,24 @@ export function createRouter(
           return await closeQuestion(data, true);
         case "session.execution.succeeded": {
           const d = data as ExecutionData;
-          if (d?.sessionID) {
-            if (await muted(d.sessionID)) return;
-            scheduleIdle(d.sessionID);
-          }
+          if (!d?.sessionID) return;
+          // A new run supersedes a completion still inside its debounce window.
+          // Cancel before any await so a slow mute lookup cannot let it fire.
+          cancelIdle(d.sessionID);
+          if (await muted(d.sessionID)) return;
+          scheduleIdle(d.sessionID);
           return;
         }
         case "session.execution.failed": {
           const d = data as ExecutionData;
-          if (!d?.sessionID || ctx.silenced || !cfg.events.error) return;
-          if (await muted(d.sessionID)) return;
+          if (!d?.sessionID) return;
+          // The run is over: a pending completion must not arrive after it,
+          // even when failures are not announced or the session is muted.
           cancelIdle(d.sessionID);
+          if (ctx.silenced || !cfg.events.error) return;
+          if (await muted(d.sessionID)) return;
+          // /stop may have run while the mute lookup was in flight.
+          if (ctx.silenced) return;
           await ctx.telegram
             .sendMessage(fmt.formatFailed(d.error, fctx))
             .catch((error) => ctx.logError(`failed notify: ${String(error)}`));
@@ -531,9 +576,12 @@ export function createRouter(
         }
         case "session.execution.interrupted": {
           const d = data as ExecutionData;
-          if (!d?.sessionID || ctx.silenced || !cfg.events.error) return;
-          if (await muted(d.sessionID)) return;
+          if (!d?.sessionID) return;
           cancelIdle(d.sessionID);
+          if (ctx.silenced || !cfg.events.error) return;
+          if (await muted(d.sessionID)) return;
+          // /stop may have run while the mute lookup was in flight.
+          if (ctx.silenced) return;
           await ctx.telegram
             .sendMessage(fmt.formatCancelled(d.sessionID, fctx), { silent: true })
             .catch((error) => ctx.logError(`cancelled notify: ${String(error)}`));

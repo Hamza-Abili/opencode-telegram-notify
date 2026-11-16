@@ -114,13 +114,18 @@ function asNumber(value: unknown, fallback: number, min: number, max: number): n
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
-function asStringList(value: unknown): string[] {
+/**
+ * Normalize a string list. Arrays are the documented shape; a plain string is
+ * split on `separator`, which is whitespace for id lists but comma-only for
+ * the `ignore` rules (a session title may contain spaces).
+ */
+function asStringList(value: unknown, separator: RegExp = /[,\s]+/): string[] {
   if (Array.isArray(value)) {
     return value.map((v) => String(v).trim()).filter((v) => v.length > 0);
   }
   if (typeof value === "string") {
     return value
-      .split(/[,\s]+/)
+      .split(separator)
       .map((v) => v.trim())
       .filter((v) => v.length > 0);
   }
@@ -195,8 +200,8 @@ export function loadConfig(
     },
     interactions: asBool(root.interactions, true),
     ignore: {
-      titles: asStringList(ignore.titles).map((v) => v.toLowerCase()),
-      agents: asStringList(ignore.agents).map((v) => v.toLowerCase()),
+      titles: asStringList(ignore.titles, /,/).map((v) => v.toLowerCase()),
+      agents: asStringList(ignore.agents, /,/).map((v) => v.toLowerCase()),
     },
     idleDebounceMs: asNumber(root.idleDebounceMs, 60_000, 0, 600_000),
     idleCooldownMs: asNumber(root.idleCooldownMs, 600_000, 0, 3_600_000),
