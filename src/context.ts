@@ -72,11 +72,14 @@ export interface AppContext {
   /** Cache of session agent names, used by the `ignore.agents` matcher. */
   sessionAgents: Map<string, string>;
   /**
-   * SessionIDs whose `session.get` lookup already succeeded. A host may report
-   * no title or no agent at all, so the caches cannot tell "not known yet" from
-   * "asked and absent"; this set keeps the mute matcher from asking again.
+   * SessionIDs whose `session.get` lookup already settled, plus deleted
+   * sessions. A host may report no title/agent/parent, so the caches cannot
+   * tell "not known yet" from "asked and absent"; this set keeps the matcher
+   * from asking again (and from querying a deleted ancestor).
    */
   sessionLookups: Set<string>;
+  /** sessionID -> parentID; null means the session is known to be top-level. */
+  sessionParents: Map<string, string | null>;
   /** sessionID -> directory attribution index (for events without location). */
   sessionDirs: Map<string, string>;
   /** Telegram message id -> pending permission (callback routing). */
@@ -285,10 +288,10 @@ export async function replyQuestion(
 }
 
 /**
- * One `session.get` call: warms the title and agent caches (used by the mute
- * matcher) and returns the session's cumulative cost/token counters when the
- * host reports them (opencode v2 sessions do; v1 and minimal surfaces do not,
- * and the caller then simply omits the usage line).
+ * One `session.get` call: warms the title, agent and parent caches (used by the
+ * mute matcher) and returns the session's cumulative cost/token counters when
+ * the host reports them (opencode v2 sessions do; v1 and minimal surfaces do
+ * not, and the caller then simply omits the usage line).
  */
 export async function sessionInfo(
   ctx: AppContext,
@@ -305,6 +308,15 @@ export async function sessionInfo(
     if (title && !ctx.sessionTitles.has(sessionID)) ctx.sessionTitles.set(sessionID, title);
     const agent = typeof info?.agent === "string" && info.agent !== "" ? info.agent : undefined;
     if (agent && !ctx.sessionAgents.has(sessionID)) ctx.sessionAgents.set(sessionID, agent);
+    const parentID =
+      typeof info?.parentID === "string" && info.parentID !== "" ? info.parentID : undefined;
+    if (!ctx.sessionParents.has(sessionID)) {
+      // A completed lookup settles the parent question either way, so the
+      // subagent check does not repeat the API call. An event that landed
+      // while the lookup was in flight already populated the map and wins.
+      ctx.sessionParents.set(sessionID, parentID ?? null);
+      trimMap(ctx.sessionParents);
+    }
     // Remember the lookup even when the host reports neither field: the mute
     // matcher must not retry it on every later event. Failed calls are not
     // recorded, so a transient error is retried.

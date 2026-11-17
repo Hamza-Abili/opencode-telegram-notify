@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createRouter, resetProcessEventDedupe } from "../src/events.ts";
+import { createV1EventMapper } from "../src/legacy.ts";
 import { env, mkContext, permissionAsked } from "./helpers.ts";
 
 describe("router", () => {
@@ -614,5 +615,329 @@ describe("ignored sessions", () => {
     release();
     await new Promise((r) => setTimeout(r, 80));
     expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+
+  test("a child of a muted parent inherits the mute for permissions and questions", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", { sessionID: "ses_parent", title: "autolearn review" })
+    );
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+        agent: "general",
+      })
+    );
+    await router.handle(env("p3", "permission.asked", permissionAsked("per_child", "ses_child")));
+    await router.handle(
+      env("p4", "form.created", {
+        form: { id: "frm_child", sessionID: "ses_child", title: "Deploy?", fields: [] },
+      })
+    );
+    expect(calls.sent).toHaveLength(0);
+    expect(ctx.pending.size).toBe(0);
+    expect(ctx.formMsgs.size).toBe(0);
+  });
+
+  test("a sparse session.created does not downgrade a known child", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj");
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(env("p2", "session.created", { sessionID: "ses_child", title: "renamed" }));
+    await router.handle(
+      env("p3", "session.execution.failed", { sessionID: "ses_child", error: { type: "x" } })
+    );
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a v1 title-only update does not clear a child parent link", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj");
+    const map = createV1EventMapper("/tmp/proj");
+    const created = map({
+      type: "session.created",
+      properties: { info: { id: "ses_child", parentID: "ses_parent", title: "child" } },
+    });
+    const updated = map({
+      type: "session.updated",
+      properties: { info: { id: "ses_child", title: "renamed child" } },
+    });
+    const failed = map({
+      type: "session.error",
+      properties: {
+        sessionID: "ses_child",
+        error: { name: "x", data: { message: "boom" } },
+      },
+    });
+    if (!created || !updated || !failed) throw new Error("v1 mapper returned undefined");
+    const router = createRouter(ctx);
+    await router.handle(created);
+    await router.handle(updated);
+    await router.handle(failed);
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a deleted intermediate keeps grandparent inheritance", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", { sessionID: "ses_grandparent", title: "autolearn review" })
+    );
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_parent",
+        parentID: "ses_grandparent",
+        title: "parent",
+      })
+    );
+    await router.handle(
+      env("p3", "session.created", {
+        sessionID: "ses_grandchild",
+        parentID: "ses_parent",
+        title: "grandchild",
+      })
+    );
+    await router.handle(env("p4", "session.deleted", { sessionID: "ses_parent" }));
+    await router.handle(
+      env("p5", "permission.asked", permissionAsked("per_grandchild", "ses_grandchild"))
+    );
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a deeper subagent chain inherits the mute", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", { sessionID: "ses_parent", title: "autolearn review" })
+    );
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(
+      env("p3", "session.created", {
+        sessionID: "ses_grandchild",
+        parentID: "ses_child",
+        title: "grandchild",
+      })
+    );
+    await router.handle(
+      env("p4", "permission.asked", permissionAsked("per_grandchild", "ses_grandchild"))
+    );
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a child of an active parent still notifies", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(env("p1", "session.created", { sessionID: "ses_parent", title: "Work" }));
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(env("p3", "permission.asked", permissionAsked("per_child", "ses_child")));
+    expect(calls.sent.filter((s) => s.text.includes("🔐"))).toHaveLength(1);
+  });
+
+  test("a pre-existing parent is looked up to inherit the mute", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    let parentLookups = 0;
+    ctx.client.session = {
+      async get(input: { sessionID: string }) {
+        if (input.sessionID === "ses_parent") {
+          parentLookups += 1;
+          return { id: "ses_parent", title: "autolearn review" };
+        }
+        return { id: input.sessionID, title: "child" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(env("p2", "permission.asked", permissionAsked("per_child", "ses_child")));
+    expect(parentLookups).toBe(1);
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("renaming a parent into a rule mutes existing children", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(env("p1", "session.created", { sessionID: "ses_parent", title: "Work" }));
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(env("p3", "permission.asked", permissionAsked("per_child_1", "ses_child")));
+    await router.handle(
+      env("p4", "session.renamed", { sessionID: "ses_parent", title: "autolearn review" })
+    );
+    await router.handle(env("p5", "permission.asked", permissionAsked("per_child_2", "ses_child")));
+    expect(calls.sent.filter((s) => s.text.includes("🔐"))).toHaveLength(1);
+  });
+
+  test("session.get can supply the parent link for a pre-existing child", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    let lookups = 0;
+    ctx.client.session = {
+      async get(input: { sessionID: string }) {
+        lookups += 1;
+        if (input.sessionID === "ses_child") {
+          return { id: "ses_child", title: "child", parentID: "ses_parent" };
+        }
+        return { id: "ses_parent", title: "autolearn review" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("p1", "permission.asked", permissionAsked("per_child", "ses_child")));
+    expect(lookups).toBe(2);
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("subagent failures and cancellations stay quiet", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj");
+    const router = createRouter(ctx);
+    await router.handle(env("p1", "session.created", { sessionID: "ses_parent", title: "Work" }));
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(
+      env("p3", "session.execution.failed", { sessionID: "ses_child", error: { type: "x" } })
+    );
+    await router.handle(env("p4", "session.execution.interrupted", { sessionID: "ses_child" }));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a muted session does not affect unrelated sessions", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("p1", "session.created", { sessionID: "ses_parent", title: "autolearn review" })
+    );
+    await router.handle(
+      env("p2", "session.created", { sessionID: "ses_top", title: "Interactive" })
+    );
+    await router.handle(env("p3", "permission.asked", permissionAsked("per_top", "ses_top")));
+    expect(calls.sent.filter((s) => s.text.includes("🔐"))).toHaveLength(1);
+  });
+
+  test("a surviving child stays a subagent after its parent is deleted", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { idleDebounceMs: 20 });
+    const router = createRouter(ctx);
+    await router.handle(env("p1", "session.created", { sessionID: "ses_parent", title: "Work" }));
+    await router.handle(
+      env("p2", "session.created", {
+        sessionID: "ses_child",
+        parentID: "ses_parent",
+        title: "child",
+      })
+    );
+    await router.handle(env("p3", "session.deleted", { sessionID: "ses_parent" }));
+    await router.handle(
+      env("p4", "session.execution.failed", { sessionID: "ses_child", error: { type: "x" } })
+    );
+    await router.handle(env("p5", "session.execution.succeeded", { sessionID: "ses_child" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a cold subagent failure is suppressed after a parent lookup", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    let lookups = 0;
+    ctx.client.session = {
+      async get(input: { sessionID: string }) {
+        lookups += 1;
+        return { id: input.sessionID, title: "child", parentID: "ses_parent" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(
+      env("f1", "session.execution.failed", { sessionID: "ses_cold", error: { type: "x" } })
+    );
+    await router.handle(env("f2", "session.execution.interrupted", { sessionID: "ses_cold" }));
+    expect(lookups).toBe(1);
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a cold subagent completion is suppressed after the timer lookup", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { idleDebounceMs: 20 });
+    ctx.client.session = {
+      async get(input: { sessionID: string }) {
+        return { id: input.sessionID, title: "child", parentID: "ses_parent" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("c1", "session.execution.succeeded", { sessionID: "ses_cold" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("/stop during the completion lookup suppresses the message", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { idleDebounceMs: 20 });
+    let release: () => void = () => undefined;
+    let startedResolve: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    ctx.client.session = {
+      async get() {
+        startedResolve();
+        await gate;
+        return { id: "ses_stop_timer", title: "Work" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("s1", "session.execution.succeeded", { sessionID: "ses_stop_timer" }));
+    await started;
+    ctx.silenced = true;
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls.sent).toHaveLength(0);
   });
 });

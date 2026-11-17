@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AppContext, FormChoice, PendingForm } from "./context.ts";
 import { isSettledError, logReplyError, replyPermission, replyQuestion } from "./context.ts";
-import { escapeHtml } from "./format.ts";
+import { escapeHtml, truncateHtml } from "./format.ts";
 import { decisionLabel, t } from "./i18n/index.ts";
 import { openPollerLock } from "./lock.ts";
 import type { TelegramUpdate } from "./telegram.ts";
@@ -166,14 +166,25 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
           .filter(Boolean)
           .join(", ");
         const lang = ctx.config.language;
+        const ignore = [
+          ctx.config.ignore.titles.length > 0
+            ? `${t(lang, "ignoreTitles")}: ${ctx.config.ignore.titles.join(", ")}`
+            : null,
+          ctx.config.ignore.agents.length > 0
+            ? `${t(lang, "ignoreAgents")}: ${ctx.config.ignore.agents.join(", ")}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
         const text = [
           t(lang, "statusOnline"),
           `${t(lang, "project")}: <b>${escapeHtml(ctx.project)}</b>`,
           ctx.silenced ? t(lang, "statusSilenced") : t(lang, "statusActive"),
           ctx.interactive ? t(lang, "statusInteractive") : t(lang, "statusStandby"),
           `${t(lang, "eventsLabel")}: ${events}`,
+          `${t(lang, "ignoreLabel")}: ${escapeHtml(ignore || t(lang, "ignoreNone"))}`,
         ].join("\n");
-        await ctx.telegram.sendMessage(text);
+        await ctx.telegram.sendMessage(truncateHtml(text, ctx.config.maxMessageChars));
         return;
       }
       case "/setup": {

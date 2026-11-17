@@ -51,6 +51,8 @@ import type {
 
 const SEEN_SYMBOL = Symbol.for("opencode-telegram-notify/seen-events");
 const SEEN_MAX = 2000;
+/** Maximum sessions inspected in a parentID chain, including the start. */
+const MAX_PARENT_NODES = 8;
 
 /** Process-level seen-event registry; survives plugin reloads in one process. */
 function seenSet(): Set<string> {
@@ -120,8 +122,6 @@ interface RouterState {
   idleTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** sessionID -> timestamp of the last completion notification (cooldown). */
   idleSentAt: Map<string, number>;
-  /** sessionIDs created as child sessions (parentID set). */
-  children: Set<string>;
 }
 
 /** Events whose data carries a sessionID at the top level. */
@@ -154,7 +154,7 @@ export function createRouter(
   dispose: () => void;
   recover: () => Promise<void>;
 } {
-  const state: RouterState = { idleTimers: new Map(), idleSentAt: new Map(), children: new Set() };
+  const state: RouterState = { idleTimers: new Map(), idleSentAt: new Map() };
 
   const cfg = ctx.config;
   const canTap = () => cfg.interactions && ctx.interactive;
@@ -220,6 +220,25 @@ export function createRouter(
     );
   }
 
+  /** Match one session's own title/agent, resolving it once when needed. */
+  async function ignoredSessionReason(sessionID: string): Promise<string | undefined> {
+    let reason = ignoredReason(sessionID);
+    if (reason === undefined && needsLookup(sessionID)) {
+      await sessionInfo(ctx, sessionID);
+      reason = ignoredReason(sessionID);
+    }
+    return reason;
+  }
+
+  /** Resolve whether this session is a subagent; null/undefined means no. */
+  async function isSubagent(sessionID: string): Promise<boolean> {
+    const parent = ctx.sessionParents.get(sessionID);
+    if (parent !== undefined) return parent !== null;
+    if (!ctx.client.session?.get || ctx.sessionLookups.has(sessionID)) return false;
+    await sessionInfo(ctx, sessionID);
+    return typeof ctx.sessionParents.get(sessionID) === "string";
+  }
+
   /**
    * Session-level mute for background/automation runs.
    *
@@ -231,21 +250,29 @@ export function createRouter(
    * Muting only suppresses the message: the permission or question itself is
    * untouched, so the run behaves exactly as if the plugin were not installed.
    *
-   * The caches are filled by `session.created`; a session that started before
-   * the plugin (re)loaded is resolved through `session.get` on its first event,
-   * and the successful lookup is remembered so a host that reports no agent
-   * does not get asked again for every later event.
+   * Rules are inherited through `parentID`: a subagent of a muted run is muted
+   * too, even when its own title/agent does not match. The caches are filled by
+   * `session.created`; a session that started before the plugin (re)loaded is
+   * resolved through `session.get` on its first event, and the successful
+   * lookup is remembered so a host that reports no agent does not get asked
+   * again for every later event.
    */
   async function muted(sessionID: string | undefined): Promise<boolean> {
     if (!sessionID || !ignoreActive) return false;
-    let reason = ignoredReason(sessionID);
-    if (reason === undefined && needsLookup(sessionID)) {
-      await sessionInfo(ctx, sessionID);
-      reason = ignoredReason(sessionID);
+    const visited = new Set<string>();
+    let current: string | null | undefined = sessionID;
+    for (let depth = 0; current && depth < MAX_PARENT_NODES; depth++) {
+      if (visited.has(current)) break;
+      visited.add(current);
+      const reason = await ignoredSessionReason(current);
+      if (reason !== undefined) {
+        const via = current === sessionID ? "" : ` via parent ${current}`;
+        ctx.log(`ignoring session ${sessionID}${via}: ${reason}`);
+        return true;
+      }
+      current = ctx.sessionParents.get(current);
     }
-    if (reason === undefined) return false;
-    ctx.log(`ignoring session ${sessionID}: ${reason}`);
-    return true;
+    return false;
   }
 
   function formSessionID(data: unknown): string | undefined {
@@ -421,7 +448,7 @@ export function createRouter(
 
   function scheduleIdle(sessionID: string): void {
     if (ctx.silenced || !cfg.events.idle) return;
-    if (state.children.has(sessionID)) return; // subagent noise
+    if (typeof ctx.sessionParents.get(sessionID) === "string") return; // subagent noise
     cancelIdle(sessionID);
     // The timer stays in the map until it finishes, so cancelIdle() during one
     // of the awaits below invalidates the pending send instead of losing the
@@ -447,8 +474,12 @@ export function createRouter(
         const info = await sessionInfo(ctx, sessionID);
         // A new run (or a mute) landed during the lookup: drop this one.
         if (!current()) return;
+        // The lookup may have discovered a parentID for a cold subagent.
+        if (await isSubagent(sessionID)) return;
         // A rename or agent switch may also have landed during that lookup.
         if (await muted(sessionID)) return;
+        // /stop or a newer run may have landed during the mute lookup too.
+        if (!current() || ctx.silenced) return;
         state.idleSentAt.set(sessionID, Date.now());
         trimMap(state.idleSentAt);
         void ctx.telegram
@@ -482,9 +513,13 @@ export function createRouter(
         case "session.created": {
           const d = data as SessionCreatedData;
           if (d?.sessionID) {
+            // Only an explicit parentID is authoritative here. A sparse title
+            // update (v1 maps session.updated to session.created) must not
+            // downgrade a known child; a successful session.get settles the
+            // top-level case with null.
             if (d.parentID) {
-              state.children.add(d.sessionID);
-              trimSet(state.children);
+              ctx.sessionParents.set(d.sessionID, d.parentID);
+              trimMap(ctx.sessionParents);
             }
             const title = d.title ?? d.slug;
             if (title) {
@@ -525,11 +560,16 @@ export function createRouter(
           const sid = typeof d?.sessionID === "string" ? d.sessionID : undefined;
           if (!sid) return;
           cancelIdle(sid);
-          state.children.delete(sid);
           state.idleSentAt.delete(sid);
           ctx.sessionTitles.delete(sid);
           ctx.sessionAgents.delete(sid);
-          ctx.sessionLookups.delete(sid);
+          // Keep the lookup marker so a surviving child does not retry
+          // session.get for a deleted ancestor. Parent links are kept on both
+          // sides too: they preserve subagent lifecycle suppression and let a
+          // surviving grandchild reach a live muted grandparent. OpenCode
+          // normally deletes children recursively.
+          ctx.sessionLookups.add(sid);
+          trimSet(ctx.sessionLookups);
           ctx.sessionDirs.delete(sid);
           for (const [messageId, pending] of ctx.pending) {
             if (pending.sessionID === sid) ctx.pending.delete(messageId);
@@ -566,6 +606,7 @@ export function createRouter(
           // even when failures are not announced or the session is muted.
           cancelIdle(d.sessionID);
           if (ctx.silenced || !cfg.events.error) return;
+          if (await isSubagent(d.sessionID)) return; // subagent noise
           if (await muted(d.sessionID)) return;
           // /stop may have run while the mute lookup was in flight.
           if (ctx.silenced) return;
@@ -579,6 +620,7 @@ export function createRouter(
           if (!d?.sessionID) return;
           cancelIdle(d.sessionID);
           if (ctx.silenced || !cfg.events.error) return;
+          if (await isSubagent(d.sessionID)) return; // subagent noise
           if (await muted(d.sessionID)) return;
           // /stop may have run while the mute lookup was in flight.
           if (ctx.silenced) return;

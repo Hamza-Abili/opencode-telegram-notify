@@ -124,6 +124,7 @@ export function mkContext(
     sessionTitles: new Map(),
     sessionAgents: new Map(),
     sessionLookups: new Set(),
+    sessionParents: new Map(),
     sessionDirs: new Map(),
     pending: new Map(),
     pendingForms: new Map(),

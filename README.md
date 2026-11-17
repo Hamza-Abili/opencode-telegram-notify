@@ -245,6 +245,13 @@ Both options take an array; a plain string is also accepted and split on commas
 (so `"ignore": { "titles": "autolearn review, nightly sweep" }` works, while an
 actual array keeps a multi-word title intact).
 
+Rules are inherited through the session's `parentID`: muting a parent also mutes
+the permissions, questions and lifecycle messages of its subagents. On v2,
+subagent sessions never produce completion, failure or cancellation messages
+themselves; their permission/question messages follow the same rules as the
+parent. `/status` lists the active title/agent rules so you can confirm what is
+muted.
+
 ## Commands
 
 Registered on the bot menu (☰); unknown commands and plain messages are
@@ -253,7 +260,7 @@ ignored — this is a notifier, not a chat relay.
 | Command | Effect |
 | --- | --- |
 | `/start` | Re-enables a silenced chat; echoes your chat id in a copy-block |
-| `/status` | Running state, project root, which event groups are on |
+| `/status` | Running state, project root, which event groups are on, active ignore rules |
 | `/setup` | Copy-paste-ready `opencode.jsonc` snippet (with placeholders, never your token) |
 | `/stop` | Silence notifications in this chat until `/start` |
 | `/help` | Short command list |

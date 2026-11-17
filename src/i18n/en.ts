@@ -14,6 +14,10 @@ export const en = {
   project: "Project",
   session: "Session",
   eventsLabel: "Events",
+  ignoreLabel: "Ignored",
+  ignoreTitles: "titles",
+  ignoreAgents: "agents",
+  ignoreNone: "none",
   empty: "(no details)",
 
   // Permission buttons and outcomes

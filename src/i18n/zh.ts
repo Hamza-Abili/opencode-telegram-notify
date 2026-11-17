@@ -10,6 +10,10 @@ export const zh = {
   project: "项目",
   session: "会话",
   eventsLabel: "事件",
+  ignoreLabel: "已忽略",
+  ignoreTitles: "标题",
+  ignoreAgents: "智能体",
+  ignoreNone: "无",
   empty: "（无详情）",
 
   // 权限按钮与结果

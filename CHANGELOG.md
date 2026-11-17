@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — Session muting, subagent inheritance, status rules
 
 - Added `ignore.titles` and `ignore.agents` to mute individual sessions.
   Background and automation runs (`opencode run --agent reviewer --title …`)
@@ -15,6 +15,14 @@
   otherwise leak.
 - A failed or interrupted run now always cancels a completion notification that
   is still inside its debounce window, including when `events.error` is off.
+- Ignore rules are inherited through the session's `parentID`: a muted parent
+  keeps its subagents' permissions, questions and lifecycle messages quiet too.
+  On v2, subagent failures and cancellations are now suppressed together with
+  their completions.
+- `/status` lists the active `ignore.titles` / `ignore.agents` rules (escaped
+  for Telegram HTML), or `none` when the feature is off.
+- The completion timer re-checks the current timer identity and `/stop` before
+  sending, including after the final mute lookup.
 
 ## 0.6.0 — Simplified Chinese, per-locale catalogs, compatibility watchdog
 

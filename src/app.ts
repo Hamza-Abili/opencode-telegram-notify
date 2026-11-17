@@ -77,6 +77,7 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
     sessionTitles: new Map(),
     sessionAgents: new Map(),
     sessionLookups: new Set(),
+    sessionParents: new Map(),
     sessionDirs: new Map(),
     pending: new Map(),
     pendingForms: new Map(),

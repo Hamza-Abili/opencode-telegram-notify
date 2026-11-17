@@ -10,6 +10,10 @@ export const it = {
   project: "Progetto",
   session: "Sessione",
   eventsLabel: "Eventi",
+  ignoreLabel: "Ignorati",
+  ignoreTitles: "titoli",
+  ignoreAgents: "agenti",
+  ignoreNone: "nessuno",
   empty: "(nessun dettaglio)",
 
   // Bottoni ed esiti dei permessi

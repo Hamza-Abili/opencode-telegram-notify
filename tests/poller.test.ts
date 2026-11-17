@@ -58,6 +58,36 @@ describe("dispatch — commands", () => {
     expect(calls.sent[0].text).toContain("🟢");
   });
 
+  test("/status lists active ignore rules and escapes them", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review", "<b>unsafe</b>"], agents: ["reviewer"] },
+    });
+    await dispatch(ctx, msgUpdate("/status"));
+    const text = calls.sent[0].text;
+    expect(text).toContain("Ignored:");
+    expect(text).toContain("autolearn review");
+    expect(text).toContain("reviewer");
+    expect(text).toContain("&lt;b&gt;unsafe&lt;/b&gt;");
+    expect(text).not.toContain("<b>unsafe</b>");
+  });
+
+  test("/status shows an empty ignore rule set and localizes it", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { language: "it" });
+    await dispatch(ctx, msgUpdate("/status"));
+    const text = calls.sent[0].text;
+    expect(text).toContain("Ignorati: nessuno");
+  });
+
+  test("/status truncates oversized ignore lists", async () => {
+    const titles = Array.from({ length: 200 }, (_, i) => `title-${i}-${"x".repeat(20)}`);
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      maxMessageChars: 500,
+      ignore: { titles, agents: [] },
+    });
+    await dispatch(ctx, msgUpdate("/status"));
+    expect(calls.sent[0].text.length).toBeLessThanOrEqual(500);
+  });
+
   test("/start re-enables and echoes chat id", async () => {
     const { ctx, calls } = mkContext();
     ctx.silenced = true;
