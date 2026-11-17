@@ -301,3 +301,318 @@ describe("router", () => {
     expect(calls.sent).toHaveLength(0);
   });
 });
+
+describe("ignored sessions", () => {
+  beforeEach(() => {
+    resetProcessEventDedupe();
+  });
+
+  test("a title match silences permissions, completions and failures", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("i1", "session.created", {
+        sessionID: "ses_bg",
+        title: "autolearn review",
+        agent: "build",
+      })
+    );
+    await router.handle(env("i2", "permission.asked", permissionAsked("per_i", "ses_bg")));
+    await router.handle(env("i3", "session.execution.succeeded", { sessionID: "ses_bg" }));
+    await router.handle(
+      env("i4", "session.execution.failed", { sessionID: "ses_bg", error: { type: "x" } })
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent).toHaveLength(0);
+    expect(ctx.pending.size).toBe(0);
+  });
+
+  test("titles match as case-insensitive substrings", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["AUTOLEARN"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("i5", "session.created", { sessionID: "ses_bg", title: "autolearn review #2" })
+    );
+    await router.handle(env("i6", "session.execution.succeeded", { sessionID: "ses_bg" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("an agent match silences a session whose title is unrelated", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("i7", "session.created", {
+        sessionID: "ses_bg",
+        title: "Weekly digest",
+        agent: "autolearn-reviewer",
+      })
+    );
+    await router.handle(env("i8", "session.execution.succeeded", { sessionID: "ses_bg" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("other sessions keep notifying while an ignore rule is active", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: ["autolearn-reviewer"] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("i9", "session.created", { sessionID: "ses_ok", title: "Fix login", agent: "build" })
+    );
+    await router.handle(env("i10", "permission.asked", permissionAsked("per_ok", "ses_ok")));
+    await router.handle(env("i11", "session.execution.succeeded", { sessionID: "ses_ok" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent.filter((s) => s.text.includes("🔐"))).toHaveLength(1);
+    expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+
+  test("a session started before the plugin reload is resolved via session.get", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    let lookups = 0;
+    ctx.client.session = {
+      async get() {
+        lookups += 1;
+        return { id: "ses_old", title: "Nightly sweep", agent: "autolearn-reviewer" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("i12", "session.execution.succeeded", { sessionID: "ses_old" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(lookups).toBe(1);
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a rename into an ignored title cancels a pending completion", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+      idleDebounceMs: 60,
+    });
+    const router = createRouter(ctx);
+    await router.handle(env("i13", "session.created", { sessionID: "ses_r", title: "Fresh run" }));
+    await router.handle(env("i14", "session.execution.succeeded", { sessionID: "ses_r" }));
+    await router.handle(
+      env("i15", "session.renamed", { sessionID: "ses_r", title: "autolearn review" })
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("an agent switch into an ignore rule silences the rest of the session", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("a1", "session.created", { sessionID: "ses_a", title: "Weekly digest", agent: "build" })
+    );
+    await router.handle(
+      env("a2", "session.agent.selected", {
+        sessionID: "ses_a",
+        agent: "autolearn-reviewer",
+        previous: "build",
+      })
+    );
+    await router.handle(env("a3", "session.execution.succeeded", { sessionID: "ses_a" }));
+    await router.handle(env("a4", "permission.asked", permissionAsked("per_a", "ses_a")));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("an agent switch out of an ignore rule un-mutes the session", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("b1", "session.created", {
+        sessionID: "ses_b",
+        title: "Digest",
+        agent: "autolearn-reviewer",
+      })
+    );
+    await router.handle(env("b2", "session.execution.succeeded", { sessionID: "ses_b" }));
+    await router.handle(
+      env("b3", "session.agent.selected", {
+        sessionID: "ses_b",
+        agent: "build",
+        previous: "autolearn-reviewer",
+      })
+    );
+    await router.handle(env("b4", "session.execution.succeeded", { sessionID: "ses_b" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+
+  test("an agent switch inside the debounce window cancels a pending completion", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+      idleDebounceMs: 60,
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("c1", "session.created", { sessionID: "ses_sw", title: "Digest", agent: "build" })
+    );
+    await router.handle(env("c2", "session.execution.succeeded", { sessionID: "ses_sw" }));
+    await router.handle(
+      env("c3", "session.agent.selected", { sessionID: "ses_sw", agent: "autolearn-reviewer" })
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a host that reports no agent is looked up once, not on every event", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    let lookups = 0;
+    ctx.client.session = {
+      async get() {
+        lookups += 1;
+        return { id: "ses_n", title: "Interactive" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("n1", "permission.asked", permissionAsked("per_n1", "ses_n")));
+    await router.handle(env("n2", "permission.asked", permissionAsked("per_n2", "ses_n")));
+    await router.handle(
+      env("n3", "session.execution.failed", { sessionID: "ses_n", error: { type: "x" } })
+    );
+    expect(lookups).toBe(1);
+    expect(calls.sent.filter((s) => s.text.includes("🔐"))).toHaveLength(2);
+    expect(calls.sent.filter((s) => s.text.includes("❌"))).toHaveLength(1);
+  });
+
+  test("a mute lookup that reports no agent keeps notifying", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    ctx.client.session = {
+      async get() {
+        return { id: "ses_nf", title: "Interactive" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("m1", "session.execution.succeeded", { sessionID: "ses_nf" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+
+  test("a muted question and a muted cancellation send nothing", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: ["autolearn review"], agents: [] },
+    });
+    const router = createRouter(ctx);
+    await router.handle(
+      env("q1", "session.created", { sessionID: "ses_q", title: "autolearn review" })
+    );
+    await router.handle(
+      env("q2", "form.created", {
+        form: { id: "frm_q", sessionID: "ses_q", title: "Deploy?", fields: [] },
+      })
+    );
+    await router.handle(env("q3", "session.execution.interrupted", { sessionID: "ses_q" }));
+    expect(calls.sent).toHaveLength(0);
+    expect(ctx.formMsgs.size).toBe(0);
+  });
+
+  test("/stop during a mute lookup still suppresses the notification", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ctx.client.session = {
+      async get() {
+        await gate;
+        return { id: "ses_stop", title: "T", agent: "build" };
+      },
+    };
+    const router = createRouter(ctx);
+    const pending = router.handle(
+      env("s1", "permission.asked", permissionAsked("per_stop", "ses_stop"))
+    );
+    ctx.silenced = true;
+    release();
+    await pending;
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a failure cancels a completion still inside its debounce window", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      events: { permission: true, question: true, idle: true, error: false, usage: true },
+      idleDebounceMs: 60,
+    });
+    const router = createRouter(ctx);
+    await router.handle(env("f1", "session.created", { sessionID: "ses_f", title: "Run" }));
+    await router.handle(env("f2", "session.execution.succeeded", { sessionID: "ses_f" }));
+    await router.handle(
+      env("f3", "session.execution.failed", { sessionID: "ses_f", error: { type: "x" } })
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("an agent switch during the completion lookup suppresses the message", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", {
+      ignore: { titles: [], agents: ["autolearn-reviewer"] },
+      idleDebounceMs: 20,
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ctx.client.session = {
+      async get() {
+        await gate;
+        return { id: "ses_g", title: "Digest", agent: "build" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(
+      env("g1", "session.created", { sessionID: "ses_g", title: "Digest", agent: "build" })
+    );
+    await router.handle(env("g2", "session.execution.succeeded", { sessionID: "ses_g" }));
+    await new Promise((r) => setTimeout(r, 30)); // timer is inside session.get
+    await router.handle(
+      env("g3", "session.agent.selected", { sessionID: "ses_g", agent: "autolearn-reviewer" })
+    );
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls.sent).toHaveLength(0);
+  });
+
+  test("a run that starts while a completion lookup is in flight is not duplicated", async () => {
+    const { ctx, calls } = mkContext("/tmp/proj", { idleDebounceMs: 20 });
+    let lookups = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ctx.client.session = {
+      async get() {
+        lookups += 1;
+        if (lookups === 1) await gate;
+        return { id: "ses_dup", title: "Debounced" };
+      },
+    };
+    const router = createRouter(ctx);
+    await router.handle(env("u1", "session.execution.succeeded", { sessionID: "ses_dup" }));
+    await new Promise((r) => setTimeout(r, 30)); // first timer is inside session.get
+    await router.handle(env("u2", "session.execution.succeeded", { sessionID: "ses_dup" }));
+    release();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(calls.sent.filter((s) => s.text.includes("✅ Task completed"))).toHaveLength(1);
+  });
+});

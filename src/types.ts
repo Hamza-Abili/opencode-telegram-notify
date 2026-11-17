@@ -16,6 +16,7 @@ export interface V2SessionInfo {
   slug?: string;
   projectID?: string;
   parentID?: string;
+  agent?: string;
   directory?: string;
   location?: { directory?: string };
   time?: { created?: number; updated?: number };
@@ -136,6 +137,13 @@ export interface SessionCreatedData {
   title?: string;
   slug?: string;
   agent?: string;
+}
+
+/** data payload of `session.agent.selected` (opencode v2.3+). */
+export interface SessionAgentSelectedData {
+  sessionID: string;
+  agent?: string;
+  previous?: string;
 }
 
 /* --------------------------------- client -------------------------------- */

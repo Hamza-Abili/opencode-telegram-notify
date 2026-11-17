@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Added `ignore.titles` and `ignore.agents` to mute individual sessions.
+  Background and automation runs (`opencode run --agent reviewer --title …`)
+  arrive on the same event stream as interactive work; a muted session now
+  produces no completion, failure, permission or question message. Muting only
+  suppresses the notification - it does not answer or deny the permission, so
+  the run behaves exactly as if the plugin were not installed. Titles match as
+  case-insensitive substrings (hosts append suffixes), agents as
+  case-insensitive exact names; sessions that started before a plugin reload are
+  resolved through `session.get` on their first event, and both a rename and an
+  agent switch inside the debounce window cancel a completion that would
+  otherwise leak.
+- A failed or interrupted run now always cancels a completion notification that
+  is still inside its debounce window, including when `events.error` is off.
+
 ## 0.6.0 — Simplified Chinese, per-locale catalogs, compatibility watchdog
 
 - Added Simplified Chinese (`zh`) notifications, including permission buttons,

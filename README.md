@@ -193,6 +193,8 @@ All options live under `options.` of the plugin entry. Only `botToken` and
 | `events.error` | boolean | `true` | Failure and cancellation notifications (limit refusals included, with a friendly label) |
 | `events.usage` | boolean | `true` | Token and cost line on completion notifications (v2 only; v1 hosts report no usage and the line is omitted) |
 | `interactions` | boolean | `true` | When `false`, permissions go out as simple messages (no buttons) |
+| `ignore.titles` | string[] | `[]` | Sessions whose **title contains** one of these strings (case-insensitive) send no notifications - for background/automation runs (v2 only) |
+| `ignore.agents` | string[] | `[]` | Sessions whose **agent name equals** one of these strings (case-insensitive) send no notifications (v2 only) |
 | `idleDebounceMs` | number | 60000 | Wait after `execution.succeeded` before pinging you; any new activity cancels it |
 | `idleCooldownMs` | number | 600000 | Min gap between completion notifications for the same session — conversational pauses never spam (0 disables) |
 | `maxMessageChars` | number | 3800 | Max body length (Telegram hard limit is 4096) |
@@ -202,6 +204,46 @@ All options live under `options.` of the plugin entry. Only `botToken` and
 `language` is process-wide (one chat per plugin instance). `zh` currently
 contains Simplified Chinese; `zh-TW`/`zh-Hant` resolve to it until a
 Traditional Chinese catalog is added.
+
+## Muting background sessions
+
+Headless and scheduled runs share the event stream with your interactive work:
+a self-learning plugin, a nightly reviewer, a CI agent. They finish often with
+nobody watching the terminal — so their notifications are noise, and a
+permission request from one of them can never be answered in time.
+
+Unlike `/stop`, which silences the whole chat, `ignore` silences individual
+sessions. Match by title (case-insensitive substring, because hosts append
+suffixes such as `#2`) or by agent name (the stable identifier behind
+`opencode run --agent …`):
+
+```json
+{
+  "options": {
+    "ignore": {
+      "titles": ["autolearn review"],
+      "agents": ["autolearn-reviewer"]
+    }
+  }
+}
+```
+
+A matched session produces **no** messages at all: no completion, no failure, no
+permission request with buttons, no question. Muting only suppresses the
+Telegram message — it never answers or denies anything, so the run itself
+behaves exactly as if the plugin were not installed. Sessions that started
+before the plugin reloaded are resolved through `session.get` on their first
+event, those lookups are remembered, and renaming a session into a matching
+title cancels a completion notification that is still inside its debounce
+window.
+
+Titles are matched against the session's current title, which the host can
+rewrite (auto-titling, `/rename`). Agent names are the more stable selector:
+prefer `ignore.agents` when a run always starts with `--agent`.
+
+Both options take an array; a plain string is also accepted and split on commas
+(so `"ignore": { "titles": "autolearn review, nightly sweep" }` works, while an
+actual array keeps a multi-word title intact).
 
 ## Commands
 
