@@ -267,10 +267,18 @@ describe("router", () => {
     await router.handle(env("p1", "permission.asked", permissionAsked("per_d", "ses_d")));
     const messageId = ctx.permMsgs.get("per_d") as number;
     expect(ctx.pending.has(messageId)).toBe(true);
+    ctx.pendingForms.set(messageId + 1, {
+      formID: "frm_d",
+      sessionID: "ses_d",
+      fieldKey: "k",
+      fieldType: "string",
+      options: [],
+    });
     await router.handle({ id: "d1", type: "session.deleted", data: { sessionID: "ses_d" } });
     expect(ctx.sessionTitles.has("ses_d")).toBe(false);
     expect(ctx.sessionDirs.has("ses_d")).toBe(false);
     expect(ctx.pending.has(messageId)).toBe(false);
+    expect(ctx.pendingForms.has(messageId + 1)).toBe(false);
   });
 
   test("child sessions never send lifecycle notifications", async () => {

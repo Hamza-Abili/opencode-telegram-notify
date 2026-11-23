@@ -19,7 +19,7 @@ function start(client: V2Client): App | undefined {
   try {
     return createApp(client);
   } catch (error) {
-    console.log(`[opencode-telegram-notify] failed to start: ${String(error)}`);
+    console.error(`[opencode-telegram-notify] failed to start: ${String(error)}`);
     return undefined;
   }
 }
@@ -45,7 +45,7 @@ export default {
         app = started;
       })
       .catch((error) => {
-        console.log(`[opencode-telegram-notify] plugin client unavailable: ${String(error)}`);
+        console.error(`[opencode-telegram-notify] plugin client unavailable: ${String(error)}`);
       });
 
     return () => {

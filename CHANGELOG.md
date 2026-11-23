@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.1 — Per-token poller state, persisted silence, hardening
+
+- The poller lock and update offset now live in a directory namespaced by a
+  hash of the bot token (`~/.cache/opencode-telegram-notify/<hash>/`). Two
+  different bots on one host no longer fight over a single lock or pollute
+  each other's `update_id` offset; instances of the same token still share
+  both on purpose. Upgrades start with an empty per-token state: the old
+  shared offset file is ignored (safe to delete), so Telegram may replay
+  recent unconfirmed updates once instead of risking a wrong offset.
+- `/stop` silence is persisted in the poller state file: it survives restarts
+  and is mirrored by standby instances, so it reaches every project served by
+  that bot instead of only the polling activation.
+- A group chat configured without `allowedUserIds` now logs a one-time
+  warning: any member could otherwise tap permission buttons or run `/stop`.
+  Behavior is unchanged (the empty list still means "no extra gate").
+- Telegram 429 back-off is clamped to at most 30 s, so a single `retry_after`
+  response can no longer stall the send queue.
+- `editMessageText` treats Telegram's "message is not modified" as success
+  instead of logging a spurious error.
+- `dispose()` now aborts the in-flight long poll and keeps the heartbeat and
+  lock until the update being dispatched has been persisted, so a reload can
+  no longer let a standby take over mid-write and lose `/stop`.
+- `isSettledError` no longer classifies "unsettled" errors as already settled
+  (word-boundary match), keeping the retry path for transient failures.
+- Stricter bot-token shape validation (`<numeric-id>:<secret>`) with a clearer
+  configuration error.
+- New `lockDir` option to override the poller lock/state directory (absolute
+  paths only).
+- `/status` lists the `usage` event toggle; startup failures now go to stderr.
+- Rolling back to 0.7.0 is safe: it ignores the per-token directory and reads
+  the old shared offset file again, so at worst recent updates replay.
+
 ## 0.7.0 — Session muting, subagent inheritance, status rules
 
 - Added `ignore.titles` and `ignore.agents` to mute individual sessions.

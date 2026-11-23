@@ -5,6 +5,8 @@
  * secrets never have to live inside opencode.jsonc.
  */
 
+import path from "node:path";
+
 export const LANGUAGES = ["en", "it", "zh"] as const;
 export type Language = (typeof LANGUAGES)[number];
 export const DEFAULT_LANGUAGE: Language = "en";
@@ -84,6 +86,8 @@ export interface AppConfig {
   hideCommands: boolean;
   /** Optional append-only debug log file path. */
   logFile?: string;
+  /** Optional override for the poller lock/state directory. */
+  lockDir?: string;
 }
 
 export class ConfigError extends Error {
@@ -99,6 +103,21 @@ export function expandEnv(
   env: Record<string, string | undefined> = process.env
 ): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => env[name] ?? "");
+}
+
+/**
+ * Resolve an optional debug log file path from raw options. Shared by
+ * `loadConfig` and the pre-config failure reporter, so a bad config can still
+ * be written to the very log file the user asked for.
+ */
+export function resolveLogFile(
+  raw: unknown,
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  const value = (raw as { logFile?: unknown } | null | undefined)?.logFile;
+  return typeof value === "string" && value.trim() !== ""
+    ? expandEnv(value.trim(), env)
+    : undefined;
 }
 
 function asBool(value: unknown, fallback: boolean): boolean {
@@ -157,9 +176,9 @@ export function loadConfig(
         "${TELEGRAM_BOT_TOKEN} to read it from the environment)"
     );
   }
-  if (!botToken.includes(":")) {
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
     throw new ConfigError(
-      "options.telegram.botToken does not look like a Telegram token (<id>:<secret>)"
+      "options.telegram.botToken does not look like a Telegram token (<numeric-id>:<secret>)"
     );
   }
 
@@ -181,6 +200,20 @@ export function loadConfig(
       : env.TELEGRAM_LANGUAGE;
   const language = parseLanguage(configuredLanguage);
   const ignore = (root.ignore ?? {}) as Record<string, unknown>;
+
+  // A relative lockDir resolves against each process's cwd, so two instances
+  // of the same bot could take different locks and both poll. Require an
+  // absolute path (the default is already host-wide and per token).
+  const lockDirRaw =
+    typeof root.lockDir === "string" && root.lockDir.trim() !== ""
+      ? expandEnv(root.lockDir.trim(), env)
+      : undefined;
+  const lockDir = lockDirRaw === "" ? undefined : lockDirRaw;
+  if (lockDir !== undefined && !path.isAbsolute(lockDir)) {
+    throw new ConfigError(
+      "options.lockDir must be an absolute path (it is shared by every instance of the bot)"
+    );
+  }
 
   return {
     telegram: {
@@ -207,9 +240,7 @@ export function loadConfig(
     idleCooldownMs: asNumber(root.idleCooldownMs, 600_000, 0, 3_600_000),
     maxMessageChars: asNumber(root.maxMessageChars, 3800, 500, 3900),
     hideCommands: asBool(root.hideCommands, false),
-    logFile:
-      typeof root.logFile === "string" && root.logFile.trim() !== ""
-        ? expandEnv(root.logFile.trim(), env)
-        : undefined,
+    logFile: resolveLogFile(root, env),
+    lockDir,
   };
 }

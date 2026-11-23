@@ -158,6 +158,19 @@ export function env(
   };
 }
 
+/** Poll a cheap predicate; throws instead of hanging when it never holds. */
+export async function waitFor(
+  predicate: () => boolean,
+  label = "condition",
+  timeoutMs = 1500
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 /** A representative permission.asked payload. */
 export const permissionAsked = (id: string, sessionID = "ses_1") => ({
   id,

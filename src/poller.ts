@@ -1,7 +1,8 @@
 /**
  * opencode-telegram-notify — Telegram poller.
  *
- * Exactly one activation on the host (guaranteed by the poller lock) long-polls
+ * Exactly one activation per bot token on the host (guaranteed by the poller
+ * lock, which lives in a directory namespaced by a hash of the token) long-polls
  * getUpdates and routes:
  *   - inline button presses → permission decisions (tap-only, never auto);
  *   - chat commands (/start /help /status /setup /stop).
@@ -9,12 +10,15 @@
  * Only the bound chat is served; unknown chats are ignored. Messages that are
  * not commands are ignored silently (this is a notifier, not a general bot).
  *
- * Offset persistence: the last processed update_id is stored in poller.offset.json
- * alongside the poller lock file. This survives process restarts and prevents
- * reprocessing old updates. A process-level dedupe set (Symbol.for) provides
- * additional protection against redelivery within the same process lifetime.
+ * State persistence: the last processed update_id and the /stop silence flag
+ * are stored in poller.offset.json next to the poller lock. Both survive
+ * process restarts and, because the directory is shared per token, propagate
+ * to the other activations of the same bot (standby instances mirror the
+ * silence flag). A process-level dedupe set (Symbol.for) additionally guards
+ * against redelivery within the same process lifetime.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +32,12 @@ import { TelegramError } from "./telegram.ts";
 import type { PermissionDecision } from "./types.ts";
 
 export interface PollerOptions {
-  /** Directory for the cross-process poller lock. Default: OS cache dir. */
+  /**
+   * Directory for the cross-process lock and state file. Default:
+   * `<OS cache dir>/opencode-telegram-notify/<token namespace>`. An explicit
+   * value is used as-is, so it must be absolute and shared on purpose
+   * (`loadConfig` enforces the absolute path for plugin users).
+   */
   lockDir?: string;
   /** How many seconds to wait on getUpdates long polling. */
   longPollSeconds?: number;
@@ -46,16 +55,26 @@ export interface PollerOptions {
 const POLL_ACQUIRE_DELAY_MS = 15_000;
 const STANDSTILL_MS = 45_000;
 const FAILURE_DELAY_MS = 5_000;
-const OFFSET_FILE = "poller.offset.json";
+/** Offset + silence state; one file, written atomically, per bot token. */
+const STATE_FILE = "poller.offset.json";
 const SEEN_MAX = 2000;
 
-/** Process-level seen-update registry; survives plugin reloads in one process. */
+/** Stable per-token directory suffix: two bots on one host never share state. */
+export function tokenNamespace(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+/**
+ * Process-level seen-update registry, keyed by `<token namespace>:<update_id>`.
+ * `update_id` is per bot, so the namespace keeps two tokens in one process
+ * from skipping each other's updates. Survives plugin reloads.
+ */
 const SEEN_SYMBOL = Symbol.for("opencode-telegram-notify/seen-updates");
-function seenSet(): Set<number> {
-  const store = globalThis as unknown as Record<symbol, Set<number>>;
+function seenSet(): Set<string> {
+  const store = globalThis as unknown as Record<symbol, Set<string>>;
   let set = store[SEEN_SYMBOL];
   if (!set) {
-    set = new Set<number>();
+    set = new Set<string>();
     store[SEEN_SYMBOL] = set;
   }
   return set;
@@ -68,31 +87,37 @@ export function resetProcessUpdateDedupe(): void {
 }
 
 function offsetFilePath(lockDir: string): string {
-  return path.join(lockDir, OFFSET_FILE);
+  return path.join(lockDir, STATE_FILE);
 }
 
-function readOffset(lockDir: string): number {
+interface PollerState {
+  offset: number;
+  /** Persisted /stop silence, shared by every activation of this bot token. */
+  silenced: boolean;
+}
+
+function readState(lockDir: string): PollerState {
   try {
     const raw = fs.readFileSync(offsetFilePath(lockDir), "utf8");
     const parsed = JSON.parse(raw);
-    if (
-      typeof parsed.offset === "number" &&
-      Number.isInteger(parsed.offset) &&
-      parsed.offset >= 0
-    ) {
-      return parsed.offset;
-    }
+    return {
+      offset:
+        typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
+          ? parsed.offset
+          : 0,
+      silenced: parsed.silenced === true,
+    };
   } catch {
-    // missing or malformed → start from 0
+    // missing or malformed → start fresh
   }
-  return 0;
+  return { offset: 0, silenced: false };
 }
 
-function writeOffset(lockDir: string, offset: number): void {
+function writeState(lockDir: string, state: PollerState): void {
   try {
     fs.mkdirSync(lockDir, { recursive: true });
     const tmp = `${offsetFilePath(lockDir)}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ offset }));
+    fs.writeFileSync(tmp, JSON.stringify(state));
     fs.renameSync(tmp, offsetFilePath(lockDir));
   } catch {
     // best effort; next successful write will catch up
@@ -102,6 +127,21 @@ function writeOffset(lockDir: string, offset: number): void {
 function defaultLockDir(): string {
   const base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
   return path.join(base, "opencode-telegram-notify");
+}
+
+/**
+ * One-time advisory: on a group chat without `allowedUserIds` any member can
+ * tap permission buttons or run bot commands. Logged, never enforced, so an
+ * explicit empty list keeps working (private chats are the common case).
+ */
+function warnOpenGroupChat(ctx: AppContext): void {
+  if (ctx.config.telegram.allowedUserIds.length > 0) return;
+  const chat = ctx.config.telegram.chatId.trim();
+  if (/^-\d+$/.test(chat)) {
+    ctx.log(
+      `group chat ${chat} has no allowedUserIds: any member can tap buttons or run bot commands — set options.telegram.allowedUserIds to restrict`
+    );
+  }
 }
 
 function sameChat(ctx: AppContext, chatId: number | undefined): boolean {
@@ -162,6 +202,7 @@ async function handleCommand(ctx: AppContext, command: string, chatId: number): 
           ctx.config.events.question ? "question" : null,
           ctx.config.events.idle ? "idle" : null,
           ctx.config.events.error ? "error" : null,
+          ctx.config.events.usage ? "usage" : null,
         ]
           .filter(Boolean)
           .join(", ");
@@ -376,10 +417,17 @@ export async function dispatch(ctx: AppContext, update: TelegramUpdate): Promise
 
 /**
  * Start the polling loop. Returns a dispose that stops the loop at the next
- * cycle boundary and releases the cross-process lock.
+ * cycle boundary; the lock is released only after the in-flight update has
+ * been dispatched and persisted. If a host SDK call never settles, the lock
+ * is kept (and heartbeated) rather than risking a split-brain standby; the
+ * process then needs a restart.
  */
 export function startPoller(ctx: AppContext, options: PollerOptions = {}): () => void {
-  const lockDir = options.lockDir ?? defaultLockDir();
+  // An explicit lockDir is used as-is (tests, power users); the default is
+  // namespaced per bot token so two bots on one host can never share a lock
+  // or cross-pollute each other's update offset.
+  const namespace = tokenNamespace(ctx.config.telegram.botToken);
+  const lockDir = options.lockDir ?? path.join(defaultLockDir(), namespace);
   const longPoll = options.longPollSeconds ?? 20;
   const acquireDelay = options.acquireDelayMs ?? POLL_ACQUIRE_DELAY_MS;
   const standstill = options.standstillMs ?? STANDSTILL_MS;
@@ -391,7 +439,24 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
   let owned = false;
   let commandsAttempted = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let offset = readOffset(lockDir);
+  const controller = new AbortController();
+
+  const initial = readState(lockDir);
+  let offset = initial.offset;
+  /**
+   * Persist offset + silence in one atomic write. Called after every handled
+   * update (and every dedupe hit) so a dispose mid-batch, a crash or a lost
+   * write can never make Telegram redeliver an update forever.
+   */
+  const commit = (next: number): void => {
+    offset = next;
+    writeState(lockDir, { offset, silenced: ctx.silenced });
+  };
+  if (initial.silenced) {
+    ctx.silenced = true;
+    ctx.log("resuming silenced state persisted by /stop");
+  }
+  warnOpenGroupChat(ctx);
 
   function setInteractive(value: boolean): void {
     if (owned === value) return;
@@ -409,12 +474,21 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
     while (running) {
       if (!lock.tryAcquire()) {
         setInteractive(false);
+        // A live owner persists /stop; standby instances mirror it so silence
+        // reaches every project of this bot token, not just the poller.
+        const shared = readState(lockDir);
+        if (shared.silenced !== ctx.silenced) ctx.silenced = shared.silenced;
         await sleep(acquireDelay);
         continue;
       }
-      // A standby instance may have advanced the shared offset while we were
-      // waiting; never replay updates it already handled.
-      offset = Math.max(offset, readOffset(lockDir));
+      // Another instance may have polled while we waited: never replay its
+      // updates, and honor the silence it persisted. Read-only: a standby that
+      // writes here could clobber a live owner's state.
+      if (!owned) {
+        const shared = readState(lockDir);
+        offset = Math.max(offset, shared.offset);
+        ctx.silenced = shared.silenced;
+      }
       setInteractive(true);
       if (!heartbeat) {
         heartbeat = setInterval(lock.heartbeat, 10_000);
@@ -442,22 +516,30 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
         }
       }
       try {
-        const updates = await ctx.telegram.getUpdates(offset, longPoll);
+        const updates = await ctx.telegram.getUpdates(offset, longPoll, controller.signal);
         for (const update of updates) {
           if (!running) break;
-          // Dedupe: skip updates already seen in this process lifetime
-          if (seenUpdates.has(update.update_id)) continue;
+          const seenKey = `${namespace}:${update.update_id}`;
+          if (seenUpdates.has(seenKey)) {
+            // Already dispatched in this process lifetime (the state write may
+            // have been lost to a crash): confirm it, or Telegram returns it
+            // on every poll and the offset never moves again.
+            commit(update.update_id + 1);
+            continue;
+          }
           if (seenUpdates.size >= SEEN_MAX) {
             const oldest = seenUpdates.values().next().value;
             if (oldest !== undefined) seenUpdates.delete(oldest);
           }
           await dispatch(ctx, update);
-          // Only advance offset after successful dispatch; persist immediately
-          offset = update.update_id + 1;
-          seenUpdates.add(update.update_id);
-          writeOffset(lockDir, offset);
+          // Persist per update, without a `running` guard: the update was
+          // handled, so a dispose during the batch must not replay it (or
+          // discard the /stop it just recorded).
+          commit(update.update_id + 1);
+          seenUpdates.add(seenKey);
         }
       } catch (error) {
+        if (!running) break; // aborted by dispose
         if (error instanceof TelegramError && error.code === 409) {
           // Another process on the host is polling; stand by until it stops.
           lock.release();
@@ -480,10 +562,15 @@ export function startPoller(ctx: AppContext, options: PollerOptions = {}): () =>
 
   return () => {
     running = false;
+    controller.abort();
     setInteractive(false);
-    if (heartbeat) clearInterval(heartbeat);
-    lock.release();
-    void loopDone;
+    // Keep the heartbeat and lock until the loop drains: releasing first lets
+    // a standby acquire the lock, read stale state and overwrite the /stop
+    // silence or offset that the in-flight dispatch is about to commit.
+    void loopDone.finally(() => {
+      if (heartbeat) clearInterval(heartbeat);
+      lock.release();
+    });
   };
 }
 

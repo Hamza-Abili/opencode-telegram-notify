@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { tokenNamespace } from "../src/poller.ts";
 
 const PLUGIN_ROOT = process.env.PLUGIN_SPEC ?? path.resolve(import.meta.dir, "..");
 const OPENCODE = process.env.OPENCODE_BIN ?? "opencode";
@@ -60,7 +61,13 @@ env.XDG_CACHE_HOME = path.join(root, "cache");
 env.XDG_RUNTIME_DIR = path.join(root, "runtime");
 env.OPENCODE_SERVER_PASSWORD = password;
 const logFile = path.join(root, "plugin.log");
-const lockFile = path.join(env.XDG_CACHE_HOME as string, "opencode-telegram-notify", "poller.lock");
+// The poller state lives in a directory namespaced by the bot token hash.
+const lockDir = path.join(
+  env.XDG_CACHE_HOME as string,
+  "opencode-telegram-notify",
+  tokenNamespace(dummyToken)
+);
+const lockFile = path.join(lockDir, "poller.lock");
 
 for (const dir of [
   env.HOME,

@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import { basename, resolve as resolvePath } from "node:path";
-import { ConfigError, expandEnv, loadConfig } from "./config.ts";
+import { ConfigError, loadConfig, resolveLogFile } from "./config.ts";
 import { type AppContext, createLogger } from "./context.ts";
 import { createRouter } from "./events.ts";
 import { startPoller } from "./poller.ts";
@@ -22,11 +22,7 @@ export interface App {
 function noop(): void {}
 
 function logConfigFailure(rawOptions: Record<string, unknown>, error: unknown): void {
-  const logFileRaw = rawOptions.logFile;
-  const logFile =
-    typeof logFileRaw === "string" && logFileRaw.trim() !== ""
-      ? expandEnv(logFileRaw.trim())
-      : undefined;
+  const logFile = resolveLogFile(rawOptions);
   const line = `configuration error: ${error instanceof Error ? error.message : String(error)}`;
   if (logFile) {
     try {
@@ -38,7 +34,7 @@ function logConfigFailure(rawOptions: Record<string, unknown>, error: unknown): 
       // ignore
     }
   }
-  console.log(`[opencode-telegram-notify] ${line}`);
+  console.error(`[opencode-telegram-notify] ${line}`);
 }
 
 export function createApp(client: V2Client): App {
@@ -49,7 +45,7 @@ export function createApp(client: V2Client): App {
     const rawOptions = (client.options ?? {}) as Record<string, unknown>;
     logConfigFailure(rawOptions, error);
     if (!(error instanceof ConfigError)) {
-      console.log(`[opencode-telegram-notify] unexpected startup error: ${String(error)}`);
+      console.error(`[opencode-telegram-notify] unexpected startup error: ${String(error)}`);
     }
     return { dispose: noop };
   }
@@ -103,6 +99,7 @@ function startConfigured(config: ReturnType<typeof loadConfig>, client: V2Client
   // Start the poller before the router so `ctx.interactive` is known before
   // the first permission/question event is rendered.
   const stopPoller = startPoller(ctx, {
+    lockDir: config.lockDir,
     onInteractiveChange(value) {
       interactive = value;
       if (value) void router?.recover();

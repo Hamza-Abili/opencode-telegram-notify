@@ -173,7 +173,7 @@ export function isSettledError(error: unknown): boolean {
   const code = Number(err?.code ?? err?.status);
   if (code === 404 || code === 409 || code === 410) return true;
   const message = String(err?.message ?? error).toLowerCase();
-  return /already (answered|replied|resolved|settled)|not found|no pending|does not exist|unknown (request|permission|form)|settled|expired/.test(
+  return /already (answered|replied|resolved|settled)|not found|no pending|does not exist|unknown (request|permission|form)|\bsettled\b|expired/.test(
     message
   );
 }

@@ -43,7 +43,12 @@ configure yourself.
 ## Telegram-specific hard surface
 
 - `getUpdates` single-consumer rule: a lockfile with pid+heartbeat in the user
-  cache dir elects one poller per host; other instances stand by.
+  cache dir elects one poller per bot token (the directory is derived from a
+  hash of the token); other instances of that token stand by. An explicit
+  `lockDir` is used as-is, so every bot pointed at the same path shares one
+  lock and one update offset; with different tokens, one bot can skip updates
+  whose ids are below the shared offset. Only share it between instances of
+  the same bot.
 - All bot API calls have timeouts, bounded retries and 429 handling; poller
   failures never crash OpenCode.
 - Long polling is inbound-outbound only: **no inbound port is opened** on your

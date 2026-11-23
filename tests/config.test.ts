@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, expandEnv, loadConfig, parseLanguage } from "../src/config.ts";
+import {
+  ConfigError,
+  expandEnv,
+  loadConfig,
+  parseLanguage,
+  resolveLogFile,
+} from "../src/config.ts";
 
 describe("parseLanguage", () => {
   test("matches base language and normalizes BCP-47-style tags", () => {
@@ -110,6 +116,33 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ telegram: { botToken: "nocolon", chatId: "1" } }, {})).toThrow(
       ConfigError
     );
+  });
+
+  test("token shape rejects names and empty secrets, accepts real tokens", () => {
+    expect(() => loadConfig({ telegram: { botToken: "name:secret", chatId: "1" } }, {})).toThrow(
+      ConfigError
+    );
+    expect(() => loadConfig({ telegram: { botToken: "123:", chatId: "1" } }, {})).toThrow(
+      ConfigError
+    );
+    const cfg = loadConfig({ telegram: { botToken: "123456:ABCdef-_123", chatId: "1" } }, {});
+    expect(cfg.telegram.botToken).toBe("123456:ABCdef-_123");
+  });
+
+  test("lockDir resolves through env expansion and defaults to undefined", () => {
+    const cfg = loadConfig({ ...base, lockDir: "${CACHE}/otn" }, { T: "1:x", C: "1", CACHE: "/t" });
+    expect(cfg.lockDir).toBe("/t/otn");
+    expect(loadConfig({ ...base, lockDir: "  " }, { T: "1:x", C: "1" }).lockDir).toBeUndefined();
+    // A relative path would differ per instance and break the single poller.
+    expect(() => loadConfig({ ...base, lockDir: "./cache" }, { T: "1:x", C: "1" })).toThrow(
+      ConfigError
+    );
+  });
+
+  test("resolveLogFile extracts and expands the log file path", () => {
+    expect(resolveLogFile({ logFile: "${L}" }, { L: "/tmp/x.log" })).toBe("/tmp/x.log");
+    expect(resolveLogFile({ logFile: "  " })).toBeUndefined();
+    expect(resolveLogFile({})).toBeUndefined();
   });
 
   test("allowedUserIds accepts list or comma string", () => {

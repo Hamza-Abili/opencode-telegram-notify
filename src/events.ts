@@ -326,7 +326,8 @@ export function createRouter(
       }
       trimMap(ctx.permMsgs);
     } catch (error) {
-      ctx.permMsgs.delete(req.id); // allow a later retry after a send failure
+      // Drop the marker so a host that redelivers the event can send again.
+      ctx.permMsgs.delete(req.id);
       ctx.logError(`permission notify failed: ${String(error)}`);
     }
   }
@@ -421,7 +422,8 @@ export function createRouter(
       }
       trimMap(ctx.formMsgs);
     } catch (error) {
-      ctx.formMsgs.delete(form.id); // allow a later retry after a send failure
+      // Drop the marker so a host that redelivers the event can send again.
+      ctx.formMsgs.delete(form.id);
       ctx.logError(`question notify failed: ${String(error)}`);
     }
   }
@@ -571,6 +573,10 @@ export function createRouter(
           ctx.sessionLookups.add(sid);
           trimSet(ctx.sessionLookups);
           ctx.sessionDirs.delete(sid);
+          // Drop the tap targets for this session's messages, so a late tap
+          // cannot answer a request from a deleted session. Close bookkeeping
+          // (permMsgs/formMsgs) stays: the maps are bounded, a late reply can
+          // still edit the message, and redelivered events stay deduped.
           for (const [messageId, pending] of ctx.pending) {
             if (pending.sessionID === sid) ctx.pending.delete(messageId);
           }

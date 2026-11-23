@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { redactToken, TelegramClient, TelegramError } from "../src/telegram.ts";
+import { boundedRetryAfter, redactToken, TelegramClient, TelegramError } from "../src/telegram.ts";
 
 const TOKEN = "1111111111:AAABBBsecretTOKEN/chat";
 const CHAT = "123";
@@ -75,6 +75,78 @@ describe("TelegramClient", () => {
     await client.setMyCommands([{ command: "start", description: "Connect" }]);
     expect(captured[0].body.commands).toHaveLength(1);
   });
+
+  test("429 retries with a clamped back-off instead of stalling the queue", async () => {
+    let attempts = 0;
+    const { impl } = fakeFetch(() => {
+      attempts++;
+      if (attempts === 1) {
+        return new Response(
+          JSON.stringify({ ok: false, description: "flood", parameters: { retry_after: 3600 } }),
+          { status: 429, headers: { "content-type": "application/json" } }
+        );
+      }
+      return { ok: true, result: { message_id: 7 } };
+    });
+    const client = new TelegramClient({
+      token: TOKEN,
+      chatId: CHAT,
+      fetchImpl: impl,
+      maxRetryAfterMs: 10, // test clock: the 3600 s response must not stall
+    });
+    const started = Date.now();
+    const id = await client.sendMessage("x");
+    expect(id).toBe(7);
+    expect(attempts).toBe(2);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("editMessageText treats 'message is not modified' as success", async () => {
+    const { impl } = fakeFetch(
+      () =>
+        new Response(
+          JSON.stringify({ ok: false, description: "Bad Request: message is not modified" }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }
+        )
+    );
+    const client = new TelegramClient({ token: TOKEN, chatId: CHAT, fetchImpl: impl });
+    await expect(client.editMessageText(5, "same text")).resolves.toBeUndefined();
+  });
+
+  test("a real edit error still propagates", async () => {
+    const { impl } = fakeFetch(
+      () =>
+        new Response(
+          JSON.stringify({ ok: false, description: "Bad Request: message to edit not found" }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }
+        )
+    );
+    const client = new TelegramClient({ token: TOKEN, chatId: CHAT, fetchImpl: impl });
+    await expect(client.editMessageText(5, "gone")).rejects.toBeInstanceOf(TelegramError);
+  });
+
+  test("getUpdates forwards an abort signal from the caller", async () => {
+    const client = new TelegramClient({
+      token: TOKEN,
+      chatId: CHAT,
+      fetchImpl: (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError"))
+          );
+        }),
+    });
+    const controller = new AbortController();
+    const pending = client.getUpdates(0, 1, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(TelegramError);
+  });
 });
 
 describe("redactToken", () => {
@@ -82,5 +154,16 @@ describe("redactToken", () => {
     const out = redactToken(`url /bot${TOKEN}/get and ${TOKEN}`, TOKEN);
     expect(out.includes(TOKEN)).toBe(false);
     expect(out.includes("1111111111")).toBe(false);
+  });
+});
+
+describe("boundedRetryAfter", () => {
+  test("clamps Telegram retry_after to a sane window", () => {
+    expect(boundedRetryAfter(undefined)).toBe(3000);
+    expect(boundedRetryAfter(1)).toBe(1000);
+    expect(boundedRetryAfter(3600)).toBe(30_000);
+    expect(boundedRetryAfter(0)).toBe(1000);
+    expect(boundedRetryAfter(5, 10_000)).toBe(5000);
+    expect(boundedRetryAfter(3600, 10)).toBe(10);
   });
 });
